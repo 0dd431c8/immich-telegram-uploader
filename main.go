@@ -6,6 +6,7 @@ import (
 	"os/signal"
 
 	"github.com/0dd431c8/immich-telegram-upload/app"
+	"github.com/0dd431c8/immich-telegram-upload/immich"
 	"github.com/caarlos0/env/v11"
 	"github.com/go-telegram/bot"
 	"github.com/joho/godotenv"
@@ -26,6 +27,10 @@ func main() {
 	defer cancel()
 
 	b, err := bot.New(cfg.TelegramToken)
+
+	immich := immich.New(cfg, ctx)
+
+	immich.GetAllAlbums()
 
 	if err != nil {
 		panic(err)
