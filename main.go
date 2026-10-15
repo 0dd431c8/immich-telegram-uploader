@@ -6,7 +6,7 @@ import (
 	"os/signal"
 
 	"github.com/0dd431c8/immich-telegram-upload/app"
-	"github.com/0dd431c8/immich-telegram-upload/immich"
+	"github.com/0dd431c8/immich-telegram-upload/config"
 	"github.com/caarlos0/env/v11"
 	"github.com/go-telegram/bot"
 	"github.com/joho/godotenv"
@@ -15,7 +15,7 @@ import (
 func main() {
 	_ = godotenv.Load()
 
-	cfg, err := env.ParseAs[app.Config]()
+	cfg, err := env.ParseAs[config.Config]()
 
 	if err != nil {
 		panic(err)
@@ -27,10 +27,6 @@ func main() {
 	defer cancel()
 
 	b, err := bot.New(cfg.TelegramToken)
-
-	immich := immich.New(cfg, ctx)
-
-	immich.GetAllAlbums()
 
 	if err != nil {
 		panic(err)
