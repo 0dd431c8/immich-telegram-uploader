@@ -63,7 +63,7 @@ func (client *ImmichClient) GetAllAlbums() []string {
 
 	resp, err := client.client.Do(req)
 
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if err != nil {
 		panic(err)

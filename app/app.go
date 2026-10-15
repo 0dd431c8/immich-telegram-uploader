@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -46,7 +47,7 @@ func (app *App) onStartHandler(ctx context.Context, b *bot.Bot, update *models.U
 	})
 }
 
-func downloadFile(ctx context.Context, b *bot.Bot, immich *immich.ImmichClient, fileId string, filename string) {
+func downloadFile(ctx context.Context, b *bot.Bot, immich *immich.ImmichClient, fileId string, filename string) error {
 	fmt.Println("Getting file from telegram")
 
 	file, err := b.GetFile(ctx, &bot.GetFileParams{
@@ -54,7 +55,7 @@ func downloadFile(ctx context.Context, b *bot.Bot, immich *immich.ImmichClient, 
 	})
 
 	if err != nil {
-		return
+		return err
 	}
 
 	downloadUrl := b.FileDownloadLink(file)
@@ -62,62 +63,33 @@ func downloadFile(ctx context.Context, b *bot.Bot, immich *immich.ImmichClient, 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadUrl, nil)
 
 	if err != nil {
-		return
+		return err
 	}
 
 	resp, err := http.DefaultClient.Do(req)
 
 	if err != nil {
-		fmt.Println("Failed to make req")
-		return
+		return err
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return
+		return err
 	}
 
 	immich.UploadAsset(resp.Body, filename)
 
-	// const uploadsDir = "uploads"
-	//
-	// _ = os.MkdirAll(uploadsDir, 0755)
-	//
-	// out, err := os.Create(path.Join(uploadsDir, filename))
-	//
-	// if err != nil {
-	// 	return
-	// }
-	//
-	// defer out.Close()
-	//
-	// _, err = io.Copy(out, resp.Body)
-	//
-	// if err != nil {
-	// 	panic(err)
-	// }
+	return nil
 }
 
-// func processPhoto(ctx context.Context, b *bot.Bot, photos []models.PhotoSize) {
-// 	if len(photos) < 1 {
-// 		return
-// 	}
-//
-// 	photo := photos[len(photos)-1]
-//
-// 	downloadFile(ctx, b, photo.FileID, fmt.Sprintf("%s.jpg", photo.FileUniqueID))
-// }
-
-func processDocument(ctx context.Context, b *bot.Bot, immich *immich.ImmichClient, document *models.Document) {
+func processDocument(ctx context.Context, b *bot.Bot, immich *immich.ImmichClient, document *models.Document) error {
 	if mime := document.MimeType; !strings.HasPrefix(mime, "image/") && !strings.HasPrefix(mime, "video/") {
-		return
+		return errors.New("unsupported filetype")
 	}
 
-	downloadFile(ctx, b, immich, document.FileID, document.FileName)
-}
+	err := downloadFile(ctx, b, immich, document.FileID, document.FileName)
 
-// func processVideo(ctx context.Context, b *bot.Bot, video *models.Video) {
-// 	downloadFile(ctx, b, video.FileID, fmt.Sprintf("%s.mp4", video.FileUniqueID))
-// }
+	return err
+}
 
 func (app *App) onMessageHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
 	if update.Message == nil {
@@ -125,18 +97,21 @@ func (app *App) onMessageHandler(ctx context.Context, b *bot.Bot, update *models
 	}
 
 	if update.Message.Document != nil {
-		processDocument(ctx, b, &app.immich, update.Message.Document)
+		err := processDocument(ctx, b, &app.immich, update.Message.Document)
+
+		if err != nil {
+			fmt.Println(err)
+		}
 	}
 
 	if app.config.OnlyFileAttachment {
-		return
+		_, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: update.Message.Chat.ID,
+			Text:   "Please, send attachment as a file",
+		})
+
+		if err != nil {
+			fmt.Println(err)
+		}
 	}
-
-	// if update.Message.Photo != nil {
-	// 	processPhoto(ctx, b, update.Message.Photo)
-	// }
-
-	// if update.Message.Video != nil {
-	// 	processVideo(ctx, b, update.Message.Video)
-	// }
 }
