@@ -81,12 +81,21 @@ func downloadFile(ctx context.Context, b *bot.Bot, immich *immich.ImmichClient, 
 	return nil
 }
 
-func processDocument(ctx context.Context, b *bot.Bot, immich *immich.ImmichClient, document *models.Document) error {
+func processDocument(ctx context.Context, b *bot.Bot, immich *immich.ImmichClient, chatId int64, document *models.Document) error {
 	if mime := document.MimeType; !strings.HasPrefix(mime, "image/") && !strings.HasPrefix(mime, "video/") {
 		return errors.New("unsupported filetype")
 	}
 
-	err := downloadFile(ctx, b, immich, document.FileID, document.FileName)
+	_, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID: chatId,
+		Text:   "⏳ Uploading...",
+	})
+
+	if err != nil {
+		fmt.Println(err)
+	}
+
+	err = downloadFile(ctx, b, immich, document.FileID, document.FileName)
 
 	return err
 }
@@ -97,17 +106,28 @@ func (app *App) onMessageHandler(ctx context.Context, b *bot.Bot, update *models
 	}
 
 	if update.Message.Document != nil {
-		err := processDocument(ctx, b, &app.immich, update.Message.Document)
+		err := processDocument(ctx, b, &app.immich, update.Message.Chat.ID, update.Message.Document)
 
 		if err != nil {
 			fmt.Println(err)
 		}
+
+		_, err = b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: update.Message.Chat.ID,
+			Text:   "✅ Uploaded successfully!",
+		})
+
+		if err != nil {
+			fmt.Println(err)
+		}
+
+		return
 	}
 
 	if app.config.OnlyFileAttachment {
 		_, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: update.Message.Chat.ID,
-			Text:   "Please, send attachment as a file",
+			Text:   "⚠️ Please, send attachment as a file ⚠️",
 		})
 
 		if err != nil {
