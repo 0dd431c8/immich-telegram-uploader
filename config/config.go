@@ -1,4 +1,4 @@
-package app
+package config
 
 type Config struct {
 	TelegramToken      string `env:"TELEGRAM_BOT_TOKEN,required"`

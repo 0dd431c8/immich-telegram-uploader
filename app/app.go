@@ -3,22 +3,23 @@ package app
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
-	"os"
-	"path"
 	"strings"
 
+	"github.com/0dd431c8/immich-telegram-upload/config"
+	"github.com/0dd431c8/immich-telegram-upload/immich"
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 )
 
 type App struct {
-	config Config
+	config config.Config
+	immich immich.ImmichClient
 }
 
-func New(cfg Config) App {
-	return App{cfg}
+func New(cfg config.Config) App {
+	immich := immich.New(cfg, context.Background())
+	return App{cfg, immich}
 }
 
 func (app *App) SetupBot(ctx context.Context, b *bot.Bot) {
@@ -45,7 +46,9 @@ func (app *App) onStartHandler(ctx context.Context, b *bot.Bot, update *models.U
 	})
 }
 
-func downloadFile(ctx context.Context, b *bot.Bot, fileId string, filename string) {
+func downloadFile(ctx context.Context, b *bot.Bot, immich *immich.ImmichClient, fileId string, filename string) {
+	fmt.Println("Getting file from telegram")
+
 	file, err := b.GetFile(ctx, &bot.GetFileParams{
 		FileID: fileId,
 	})
@@ -65,55 +68,56 @@ func downloadFile(ctx context.Context, b *bot.Bot, fileId string, filename strin
 	resp, err := http.DefaultClient.Do(req)
 
 	if err != nil {
+		fmt.Println("Failed to make req")
 		return
 	}
-
-	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		return
 	}
 
-	const uploadsDir = "uploads"
+	immich.UploadAsset(resp.Body, filename)
 
-	_ = os.MkdirAll(uploadsDir, 0755)
-
-	out, err := os.Create(path.Join(uploadsDir, filename))
-
-	if err != nil {
-		return
-	}
-
-	defer out.Close()
-
-	_, err = io.Copy(out, resp.Body)
-
-	if err != nil {
-		panic(err)
-	}
+	// const uploadsDir = "uploads"
+	//
+	// _ = os.MkdirAll(uploadsDir, 0755)
+	//
+	// out, err := os.Create(path.Join(uploadsDir, filename))
+	//
+	// if err != nil {
+	// 	return
+	// }
+	//
+	// defer out.Close()
+	//
+	// _, err = io.Copy(out, resp.Body)
+	//
+	// if err != nil {
+	// 	panic(err)
+	// }
 }
 
-func processPhoto(ctx context.Context, b *bot.Bot, photos []models.PhotoSize) {
-	if len(photos) < 1 {
-		return
-	}
+// func processPhoto(ctx context.Context, b *bot.Bot, photos []models.PhotoSize) {
+// 	if len(photos) < 1 {
+// 		return
+// 	}
+//
+// 	photo := photos[len(photos)-1]
+//
+// 	downloadFile(ctx, b, photo.FileID, fmt.Sprintf("%s.jpg", photo.FileUniqueID))
+// }
 
-	photo := photos[len(photos)-1]
-
-	downloadFile(ctx, b, photo.FileID, fmt.Sprintf("%s.jpg", photo.FileUniqueID))
-}
-
-func processDocument(ctx context.Context, b *bot.Bot, document *models.Document) {
+func processDocument(ctx context.Context, b *bot.Bot, immich *immich.ImmichClient, document *models.Document) {
 	if mime := document.MimeType; !strings.HasPrefix(mime, "image/") && !strings.HasPrefix(mime, "video/") {
 		return
 	}
 
-	downloadFile(ctx, b, document.FileID, document.FileName)
+	downloadFile(ctx, b, immich, document.FileID, document.FileName)
 }
 
-func processVideo(ctx context.Context, b *bot.Bot, video *models.Video) {
-	downloadFile(ctx, b, video.FileID, fmt.Sprintf("%s.mp4", video.FileUniqueID))
-}
+// func processVideo(ctx context.Context, b *bot.Bot, video *models.Video) {
+// 	downloadFile(ctx, b, video.FileID, fmt.Sprintf("%s.mp4", video.FileUniqueID))
+// }
 
 func (app *App) onMessageHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
 	if update.Message == nil {
@@ -121,18 +125,18 @@ func (app *App) onMessageHandler(ctx context.Context, b *bot.Bot, update *models
 	}
 
 	if update.Message.Document != nil {
-		processDocument(ctx, b, update.Message.Document)
+		processDocument(ctx, b, &app.immich, update.Message.Document)
 	}
 
 	if app.config.OnlyFileAttachment {
 		return
 	}
 
-	if update.Message.Photo != nil {
-		processPhoto(ctx, b, update.Message.Photo)
-	}
+	// if update.Message.Photo != nil {
+	// 	processPhoto(ctx, b, update.Message.Photo)
+	// }
 
-	if update.Message.Video != nil {
-		processVideo(ctx, b, update.Message.Video)
-	}
+	// if update.Message.Video != nil {
+	// 	processVideo(ctx, b, update.Message.Video)
+	// }
 }
