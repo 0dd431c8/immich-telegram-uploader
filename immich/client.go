@@ -1,6 +1,7 @@
 package immich
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -14,10 +15,11 @@ import (
 )
 
 type ImmichClient struct {
-	client http.Client
-	ctx    context.Context
-	apiUrl string
-	token  string
+	client  http.Client
+	ctx     context.Context
+	apiUrl  string
+	token   string
+	albumId string
 }
 
 type Album struct {
@@ -27,7 +29,7 @@ type Album struct {
 func New(cfg config.Config, ctx context.Context) ImmichClient {
 	client := http.Client{Timeout: 10 * time.Second}
 
-	return ImmichClient{client, ctx, cfg.ImmichAPIURL, cfg.ImmichToken}
+	return ImmichClient{client, ctx, cfg.ImmichAPIURL, cfg.ImmichToken, cfg.ImmichAlbumId}
 }
 
 func (client *ImmichClient) prepareReq(method string, body io.Reader, path ...string) *http.Request {
@@ -131,31 +133,37 @@ func (client *ImmichClient) UploadAsset(data io.Reader, filename string) {
 
 	fmt.Printf("result: %v\n", result)
 
-	client.MoveToAlbum("eaa67a93-ade9-4c2f-a168-30146be3a048", result.Id)
+	if client.albumId != "" {
+		client.moveToAlbum(result.Id)
+	}
 }
 
-func (client *ImmichClient) MoveToAlbum(albumId string, assetId string) {
-	req := client.prepareReq(http.MethodPut, nil, "albums", "assets")
+func (client *ImmichClient) moveToAlbum(assetId string) {
+	params := struct {
+		AlbumIds []string `json:"albumIds"`
+		AssetIds []string `json:"assetIds"`
+	}{
+		[]string{client.albumId},
+		[]string{assetId},
+	}
 
-	q := req.URL.Query()
-	q.Set("albumIds", albumId)
-	q.Set("assetIds", assetId)
+	body, err := json.Marshal(params)
 
-	req.URL.RawQuery = q.Encode()
+	if err != nil {
+		panic(err)
+	}
 
-	_, err := client.client.Do(req)
+	req := client.prepareReq(http.MethodPut, bytes.NewReader(body), "albums", "assets")
+
+	req.Header.Set("Content-Type", "application/json")
+
+	res, err := client.client.Do(req)
+
+	r, _ := io.ReadAll(res.Body)
+
+	fmt.Println(string(r))
 
 	if err != nil {
 		fmt.Println(err)
 	}
 }
-
-// func (client *ImmichClient) GetAlbum(id string) Album {
-// 	req := client.prepareGetReq("albums", id)
-//
-// 	resp, err := client.client.Do(req)
-//
-// 	if err != nil {
-// 		panic(err)
-// 	}
-// }
