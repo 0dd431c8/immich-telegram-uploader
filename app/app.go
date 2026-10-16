@@ -14,13 +14,14 @@ import (
 )
 
 type App struct {
-	config config.Config
-	immich immich.ImmichClient
+	config          config.Config
+	immich          immich.ImmichClient
+	uploadsDisabled bool
 }
 
 func New(cfg config.Config) App {
 	immich := immich.New(cfg, context.Background())
-	return App{cfg, immich}
+	return App{cfg, immich, false}
 }
 
 func (app *App) SetupBot(ctx context.Context, b *bot.Bot) {
@@ -34,17 +35,43 @@ func (app *App) SetupBot(ctx context.Context, b *bot.Bot) {
 		panic(err)
 	}
 
-	b.RegisterHandler(bot.HandlerTypeMessageText, "/start", bot.MatchTypeCommand, app.onStartHandler)
-	b.RegisterHandler(bot.HandlerTypeMessageText, "", bot.MatchTypeContains, app.onMessageHandler)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "start", bot.MatchTypeCommand, app.onStartHandler)
+	b.RegisterHandler(bot.HandlerTypeMessageText, "enable", bot.MatchTypeCommand, app.onSetDisabled(false))
+	b.RegisterHandler(bot.HandlerTypeMessageText, "disable", bot.MatchTypeCommand, app.onSetDisabled(true))
+	b.RegisterHandler(bot.HandlerTypeMessageText, "", bot.MatchTypeExact, app.onMessageHandler)
+}
 
-	b.Start(ctx)
+func (app *App) onSetDisabled(disabled bool) func(ctx context.Context, b *bot.Bot, update *models.Update) {
+	admin := app.config.AdminUsername
+
+	return func(ctx context.Context, b *bot.Bot, update *models.Update) {
+		if update.Message.Chat.Username != admin {
+			return
+		}
+
+		app.uploadsDisabled = disabled
+	}
 }
 
 func (app *App) onStartHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
-	b.SendMessage(ctx, &bot.SendMessageParams{
+	attachmentModeText := ""
+
+	if app.config.OnlyFileAttachment {
+		attachmentModeText = "as a file attachment"
+	}
+
+	text := strings.Join([]string{
+		"Send photos and videos",
+		attachmentModeText,
+		"to upload",
+	}, " ")
+
+	_, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID: update.Message.Chat.ID,
-		Text:   fmt.Sprintf("Starting for %s", update.Message.From.Username),
+		Text:   text,
 	})
+
+	fmt.Println(err)
 }
 
 func downloadFile(ctx context.Context, b *bot.Bot, immich *immich.ImmichClient, fileId string, filename string) error {
@@ -102,6 +129,19 @@ func processDocument(ctx context.Context, b *bot.Bot, immich *immich.ImmichClien
 
 func (app *App) onMessageHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
 	if update.Message == nil {
+		return
+	}
+
+	if app.uploadsDisabled {
+		_, err := b.SendMessage(ctx, &bot.SendMessageParams{
+			ChatID: update.Message.Chat.ID,
+			Text:   "🛑 Uploads are disabled",
+		})
+
+		if err != nil {
+			fmt.Println(err)
+		}
+
 		return
 	}
 

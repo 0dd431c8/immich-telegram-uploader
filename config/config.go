@@ -2,6 +2,7 @@ package config
 
 type Config struct {
 	TelegramToken      string `env:"TELEGRAM_BOT_TOKEN,required"`
+	AdminUsername      string `env:"TELEGRAM_BOT_ADMIN_USERNAME,required"`
 	ImmichAPIURL       string `env:"IMMICH_API_URL,required"`
 	ImmichToken        string `env:"IMMICH_TOKEN,required"`
 	ImmichAlbumId      string `env:"IMMICH_ALBUM_ID"`
