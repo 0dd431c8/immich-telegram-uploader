@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync/atomic"
 
 	"github.com/0dd431c8/immich-telegram-upload/config"
 	"github.com/go-telegram/bot"
@@ -18,7 +19,7 @@ type OnUpload func(asset io.Reader, filename string) error
 type Manager struct {
 	telegramToken      string
 	adminUsername      string
-	uploadsDisabled    bool
+	uploadsDisabled    *atomic.Bool
 	onlyFileAttachment bool
 	bot                *bot.Bot
 	ctx                context.Context
@@ -31,7 +32,7 @@ func New(cfg config.Config, ctx context.Context, onUpload OnUpload) Manager {
 	manager := Manager{
 		telegramToken:      cfg.TelegramToken,
 		adminUsername:      cfg.AdminUsername,
-		uploadsDisabled:    false,
+		uploadsDisabled:    &atomic.Bool{},
 		onlyFileAttachment: cfg.OnlyFileAttachment,
 		ctx:                ctx,
 		onUpload:           onUpload,
@@ -171,7 +172,7 @@ func (manager *Manager) onSetDisabled(disabled bool) func(ctx context.Context, b
 			return
 		}
 
-		manager.uploadsDisabled = disabled
+		manager.uploadsDisabled.Store(disabled)
 	}
 }
 
@@ -254,7 +255,7 @@ func (manager *Manager) onMessageHandler(ctx context.Context, b *bot.Bot, update
 		return
 	}
 
-	if manager.uploadsDisabled {
+	if manager.uploadsDisabled.Load() {
 		_, err := b.SendMessage(ctx, &bot.SendMessageParams{
 			ChatID: update.Message.Chat.ID,
 			Text:   "🛑 Uploads are disabled",
