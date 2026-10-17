@@ -8,7 +8,6 @@ import (
 	"github.com/0dd431c8/immich-telegram-upload/app"
 	"github.com/0dd431c8/immich-telegram-upload/config"
 	"github.com/caarlos0/env/v11"
-	"github.com/go-telegram/bot"
 	"github.com/joho/godotenv"
 )
 
@@ -21,19 +20,10 @@ func main() {
 		panic(err)
 	}
 
-	app := app.New(cfg)
-
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	b, err := bot.New(cfg.TelegramToken)
+	app := app.New(cfg, ctx)
 
-	if err != nil {
-		panic(err)
-	}
-
-	defer b.Close(ctx)
-
-	app.SetupBot(ctx, b)
-	b.Start(ctx)
+	app.Start()
 }
