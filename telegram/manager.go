@@ -13,7 +13,7 @@ import (
 	"github.com/go-telegram/bot/models"
 )
 
-type OnUpload func(asset io.Reader, filename string)
+type OnUpload func(asset io.Reader, filename string) error
 
 type Manager struct {
 	telegramToken      string
@@ -223,9 +223,7 @@ func downloadFile(ctx context.Context, b *bot.Bot, onUpload OnUpload, fileId str
 		return err
 	}
 
-	onUpload(resp.Body, filename)
-
-	return nil
+	return onUpload(resp.Body, filename)
 }
 
 func (manager *Manager) processDocument(ctx context.Context, b *bot.Bot, onUpload OnUpload, chatId int64, document *models.Document) error {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -84,7 +85,7 @@ func (client *ImmichClient) GetAllAlbums() []string {
 	return []string{}
 }
 
-func (client *ImmichClient) UploadAsset(data io.Reader, filename string) {
+func (client *ImmichClient) UploadAsset(data io.Reader, filename string) error {
 	reader, writer := io.Pipe()
 	mw := multipart.NewWriter(writer)
 
@@ -118,27 +119,25 @@ func (client *ImmichClient) UploadAsset(data io.Reader, filename string) {
 	resp, err := client.client.Do(req)
 
 	if err != nil {
-		fmt.Println(err)
+		return err
 	}
-
-	fmt.Printf("resp.Status: %v\n", resp.Status)
 
 	var result struct {
 		Id string `json:"id"`
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		panic(err)
+		return err
 	}
-
-	fmt.Printf("result: %v\n", result)
 
 	if client.albumId != "" {
-		client.moveToAlbum(result.Id)
+		return client.moveToAlbum(result.Id)
 	}
+
+	return nil
 }
 
-func (client *ImmichClient) moveToAlbum(assetId string) {
+func (client *ImmichClient) moveToAlbum(assetId string) error {
 	params := struct {
 		AlbumIds []string `json:"albumIds"`
 		AssetIds []string `json:"assetIds"`
@@ -150,7 +149,7 @@ func (client *ImmichClient) moveToAlbum(assetId string) {
 	body, err := json.Marshal(params)
 
 	if err != nil {
-		panic(err)
+		return err
 	}
 
 	req := client.prepareReq(http.MethodPut, bytes.NewReader(body), "albums", "assets")
@@ -159,11 +158,13 @@ func (client *ImmichClient) moveToAlbum(assetId string) {
 
 	res, err := client.client.Do(req)
 
-	r, _ := io.ReadAll(res.Body)
-
-	fmt.Println(string(r))
-
 	if err != nil {
-		fmt.Println(err)
+		return err
 	}
+
+	if res.StatusCode > 201 {
+		return errors.New("failed to move to album")
+	}
+
+	return nil
 }
