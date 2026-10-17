@@ -311,15 +311,6 @@ func (manager *Manager) onMessageHandler(ctx context.Context, b *bot.Bot, update
 			if err != nil {
 				fmt.Println(err)
 			}
-
-			// _, err = b.SendMessage(ctx, &bot.SendMessageParams{
-			// 	ChatID: update.Message.Chat.ID,
-			// 	Text:   "✅ Uploaded successfully!",
-			// })
-			//
-			// if err != nil {
-			// 	fmt.Println(err)
-			// }
 		}()
 		return
 	}
