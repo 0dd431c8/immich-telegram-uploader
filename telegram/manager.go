@@ -27,7 +27,7 @@ type Manager struct {
 	uploadStateChanged chan uploadStateMessage
 }
 
-type uploadState int
+type uploadState byte
 
 const (
 	started uploadState = iota
@@ -148,10 +148,10 @@ func (manager *Manager) watchChatUploads(ctx context.Context, chatId int64, even
 			}
 
 			if userUpload.messageId == 0 {
-				msg, err := manager.bot.SendMessage(ctx, &bot.SendMessageParams{
-					ChatID: chatId,
-					Text:   "Uploading...",
-				})
+				msg, err := manager.sendMessage(
+					chatId,
+					"Uploading...",
+				)
 
 				if err != nil {
 					fmt.Println(err)
@@ -183,10 +183,10 @@ func (manager *Manager) watchChatUploads(ctx context.Context, chatId int64, even
 					fmt.Println(err)
 				}
 
-				_, err = manager.bot.SendMessage(ctx, &bot.SendMessageParams{
-					ChatID: chatId,
-					Text:   fmt.Sprintf("✅ %d files uploaded successfully", userUpload.totalUploads),
-				})
+				_, err = manager.sendMessage(
+					chatId,
+					fmt.Sprintf("✅ %d files uploaded successfully", userUpload.totalUploads),
+				)
 
 				if err != nil {
 					fmt.Println(err)
@@ -225,12 +225,21 @@ func (manager *Manager) onStartHandler(ctx context.Context, b *bot.Bot, update *
 		"to upload",
 	}, " ")
 
-	_, err := b.SendMessage(ctx, &bot.SendMessageParams{
-		ChatID: update.Message.Chat.ID,
+	_, err := manager.sendMessage(
+		update.Message.Chat.ID,
+		text,
+	)
+
+	fmt.Println(err)
+}
+
+func (manager *Manager) sendMessage(chatId int64, text string) (*models.Message, error) {
+	message, err := manager.bot.SendMessage(manager.ctx, &bot.SendMessageParams{
+		ChatID: chatId,
 		Text:   text,
 	})
 
-	fmt.Println(err)
+	return message, err
 }
 
 func downloadFile(ctx context.Context, b *bot.Bot, onUpload OnUpload, fileId string, filename string) error {
@@ -291,10 +300,10 @@ func (manager *Manager) onMessageHandler(ctx context.Context, b *bot.Bot, update
 
 	if manager.uploadsDisabled.Load() {
 		go func() {
-			_, err := b.SendMessage(ctx, &bot.SendMessageParams{
-				ChatID: update.Message.Chat.ID,
-				Text:   "🛑 Uploads are disabled",
-			})
+			_, err := manager.sendMessage(
+				update.Message.Chat.ID,
+				"🛑 Uploads are disabled",
+			)
 
 			if err != nil {
 				fmt.Println(err)
@@ -317,10 +326,10 @@ func (manager *Manager) onMessageHandler(ctx context.Context, b *bot.Bot, update
 
 	if manager.onlyFileAttachment {
 		go func() {
-			_, err := b.SendMessage(ctx, &bot.SendMessageParams{
-				ChatID: update.Message.Chat.ID,
-				Text:   "⚠️ Please, send attachment as a file ⚠️",
-			})
+			_, err := manager.sendMessage(
+				update.Message.Chat.ID,
+				"⚠️ Please, send attachment as a file ⚠️",
+			)
 
 			if err != nil {
 				fmt.Println(err)
