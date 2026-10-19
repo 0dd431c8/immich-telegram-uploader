@@ -275,8 +275,10 @@ func streamFileToUpload(ctx context.Context, b *bot.Bot, onUpload UploadFunc, fi
 		return err
 	}
 
+	defer func() { _ = resp.Body.Close() }()
+
 	if resp.StatusCode != http.StatusOK {
-		return err
+		return errors.New("failed to download file " + filename)
 	}
 
 	return onUpload(resp.Body, filename, author)

@@ -67,6 +67,8 @@ func (client *Client) UploadAsset(data io.Reader, filename string, author string
 	reader, writer := io.Pipe()
 	mw := multipart.NewWriter(writer)
 
+	defer reader.Close()
+
 	go func() {
 		defer func() {
 			if err := mw.Close(); err != nil {
@@ -78,17 +80,35 @@ func (client *Client) UploadAsset(data io.Reader, filename string, author string
 
 		ts := time.Now().Format(time.RFC3339)
 
-		_ = mw.WriteField("fileCreatedAt", ts)
-		_ = mw.WriteField("fileModifiedAt", ts)
-
-		var part io.Writer
-
-		part, _ = mw.CreateFormFile("assetData", filename)
-
-		_, err := io.Copy(part, data)
+		err := mw.WriteField("fileCreatedAt", ts)
 
 		if err != nil {
 			client.logger.Error(err.Error())
+			return
+		}
+
+		err = mw.WriteField("fileModifiedAt", ts)
+
+		if err != nil {
+			client.logger.Error(err.Error())
+			return
+		}
+
+		var part io.Writer
+
+		part, err = mw.CreateFormFile("assetData", filename)
+
+		if err != nil {
+			client.logger.Error(err.Error())
+			return
+		}
+
+		_, err = io.Copy(part, data)
+
+		if err != nil {
+			client.logger.Error(err.Error())
+
+			writer.CloseWithError(err)
 		}
 	}()
 
@@ -101,6 +121,8 @@ func (client *Client) UploadAsset(data io.Reader, filename string, author string
 	if err != nil {
 		return err
 	}
+
+	defer resp.Body.Close()
 
 	if resp.StatusCode > 201 {
 		r, _ := io.ReadAll(resp.Body)
@@ -150,6 +172,8 @@ func (client *Client) setAssetDescription(assetID string, description string) er
 		return err
 	}
 
+	defer res.Body.Close()
+
 	if res.StatusCode > 201 {
 		r, _ := io.ReadAll(res.Body)
 		return errors.New("failed to set description: " + string(r))
@@ -180,6 +204,8 @@ func (client *Client) addAssetToAlbum(assetId string) error {
 	if err != nil {
 		return err
 	}
+
+	defer res.Body.Close()
 
 	if res.StatusCode > 201 {
 		r, _ := io.ReadAll(res.Body)
