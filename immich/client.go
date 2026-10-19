@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"mime/multipart"
@@ -57,10 +58,12 @@ func (client *Client) prepareReq(method string, body io.Reader, path ...string) 
 		client.token,
 	)
 
+	req.Header.Set("Content-Type", "application/json")
+
 	return req
 }
 
-func (client *Client) UploadAsset(data io.Reader, filename string) error {
+func (client *Client) UploadAsset(data io.Reader, filename string, author string) error {
 	reader, writer := io.Pipe()
 	mw := multipart.NewWriter(writer)
 
@@ -113,8 +116,43 @@ func (client *Client) UploadAsset(data io.Reader, filename string) error {
 		return err
 	}
 
+	err = client.setAssetDescription(result.Id, fmt.Sprintf("Uploaded by @%s via telegram", author))
+
+	if err != nil {
+		return err
+	}
+
 	if client.albumId != "" {
 		return client.addAssetToAlbum(result.Id)
+	}
+
+	return nil
+}
+
+func (client *Client) setAssetDescription(assetID string, description string) error {
+	params := struct {
+		Description string `json:"description"`
+	}{
+		Description: description,
+	}
+
+	body, err := json.Marshal(params)
+
+	if err != nil {
+		return err
+	}
+
+	req := client.prepareReq(http.MethodPut, bytes.NewReader(body), "assets", assetID)
+
+	res, err := client.httpClient.Do(req)
+
+	if err != nil {
+		return err
+	}
+
+	if res.StatusCode > 201 {
+		r, _ := io.ReadAll(res.Body)
+		return errors.New("failed to set description: " + string(r))
 	}
 
 	return nil
@@ -137,8 +175,6 @@ func (client *Client) addAssetToAlbum(assetId string) error {
 
 	req := client.prepareReq(http.MethodPut, bytes.NewReader(body), "albums", "assets")
 
-	req.Header.Set("Content-Type", "application/json")
-
 	res, err := client.httpClient.Do(req)
 
 	if err != nil {
@@ -146,7 +182,8 @@ func (client *Client) addAssetToAlbum(assetId string) error {
 	}
 
 	if res.StatusCode > 201 {
-		return errors.New("failed to add to album")
+		r, _ := io.ReadAll(res.Body)
+		return errors.New("failed to add to album: " + string(r))
 	}
 
 	return nil

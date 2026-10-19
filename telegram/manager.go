@@ -15,7 +15,7 @@ import (
 	"github.com/go-telegram/bot/models"
 )
 
-type UploadFunc func(asset io.Reader, filename string) error
+type UploadFunc func(asset io.Reader, filename string, author string) error
 
 type Manager struct {
 	telegramToken      string
@@ -252,7 +252,7 @@ func (manager *Manager) sendMessage(chatId int64, text string) (*models.Message,
 	return message, err
 }
 
-func streamFileToUpload(ctx context.Context, b *bot.Bot, onUpload UploadFunc, fileId string, filename string) error {
+func streamFileToUpload(ctx context.Context, b *bot.Bot, onUpload UploadFunc, fileId string, filename string, author string) error {
 	file, err := b.GetFile(ctx, &bot.GetFileParams{
 		FileID: fileId,
 	})
@@ -279,10 +279,10 @@ func streamFileToUpload(ctx context.Context, b *bot.Bot, onUpload UploadFunc, fi
 		return err
 	}
 
-	return onUpload(resp.Body, filename)
+	return onUpload(resp.Body, filename, author)
 }
 
-func (manager *Manager) processDocument(ctx context.Context, b *bot.Bot, onUpload UploadFunc, chatId int64, document *models.Document) error {
+func (manager *Manager) processDocument(ctx context.Context, b *bot.Bot, onUpload UploadFunc, author string, chatId int64, document *models.Document) error {
 	if mime := document.MimeType; !strings.HasPrefix(mime, "image/") && !strings.HasPrefix(mime, "video/") {
 		return errors.New("unsupported filetype")
 	}
@@ -293,7 +293,7 @@ func (manager *Manager) processDocument(ctx context.Context, b *bot.Bot, onUploa
 		return ctx.Err()
 	}
 
-	err := streamFileToUpload(ctx, b, onUpload, document.FileID, document.FileName)
+	err := streamFileToUpload(ctx, b, onUpload, document.FileID, document.FileName, author)
 	select {
 	case manager.uploadEvents <- uploadEvent{chatId, uploadFinished}:
 	case <-ctx.Done():
@@ -329,7 +329,7 @@ func (manager *Manager) handleMessage(ctx context.Context, b *bot.Bot, update *m
 
 			logger.Info("Processing document", "filename", update.Message.Document.FileName, "size", update.Message.Document.FileSize)
 
-			err := manager.processDocument(ctx, b, manager.upload, update.Message.Chat.ID, update.Message.Document)
+			err := manager.processDocument(ctx, b, manager.upload, update.Message.Chat.Username, update.Message.Chat.ID, update.Message.Document)
 
 			if err != nil {
 				logger.Error("Failed to process document", "error", err)
