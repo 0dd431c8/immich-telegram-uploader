@@ -15,25 +15,25 @@ import (
 	"github.com/0dd431c8/immich-telegram-upload/config"
 )
 
-type ImmichClient struct {
-	client  http.Client
-	ctx     context.Context
-	apiUrl  string
-	token   string
-	albumId string
+type Client struct {
+	httpClient http.Client
+	ctx        context.Context
+	apiUrl     string
+	token      string
+	albumId    string
 }
 
 type Album struct {
 	Name string `json:"albumName"`
 }
 
-func New(cfg config.Config, ctx context.Context) ImmichClient {
+func New(cfg config.Config, ctx context.Context) Client {
 	client := http.Client{Timeout: 10 * time.Second}
 
-	return ImmichClient{client, ctx, cfg.ImmichAPIURL, cfg.ImmichToken, cfg.ImmichAlbumId}
+	return Client{client, ctx, cfg.ImmichAPIURL, cfg.ImmichToken, cfg.ImmichAlbumId}
 }
 
-func (client *ImmichClient) prepareReq(method string, body io.Reader, path ...string) *http.Request {
+func (client *Client) prepareReq(method string, body io.Reader, path ...string) *http.Request {
 	url, err := url.JoinPath(client.apiUrl, path...)
 
 	if err != nil {
@@ -59,10 +59,10 @@ func (client *ImmichClient) prepareReq(method string, body io.Reader, path ...st
 	return req
 }
 
-func (client *ImmichClient) GetAllAlbums() []string {
+func (client *Client) GetAllAlbums() []string {
 	req := client.prepareReq(http.MethodGet, nil, "albums")
 
-	resp, err := client.client.Do(req)
+	resp, err := client.httpClient.Do(req)
 
 	defer func() { _ = resp.Body.Close() }()
 
@@ -85,7 +85,7 @@ func (client *ImmichClient) GetAllAlbums() []string {
 	return []string{}
 }
 
-func (client *ImmichClient) UploadAsset(data io.Reader, filename string) error {
+func (client *Client) UploadAsset(data io.Reader, filename string) error {
 	reader, writer := io.Pipe()
 	mw := multipart.NewWriter(writer)
 
@@ -116,7 +116,7 @@ func (client *ImmichClient) UploadAsset(data io.Reader, filename string) error {
 
 	req.Header.Set("Content-Type", mw.FormDataContentType())
 
-	resp, err := client.client.Do(req)
+	resp, err := client.httpClient.Do(req)
 
 	if err != nil {
 		return err
@@ -131,13 +131,13 @@ func (client *ImmichClient) UploadAsset(data io.Reader, filename string) error {
 	}
 
 	if client.albumId != "" {
-		return client.moveToAlbum(result.Id)
+		return client.addAssetToAlbum(result.Id)
 	}
 
 	return nil
 }
 
-func (client *ImmichClient) moveToAlbum(assetId string) error {
+func (client *Client) addAssetToAlbum(assetId string) error {
 	params := struct {
 		AlbumIds []string `json:"albumIds"`
 		AssetIds []string `json:"assetIds"`
@@ -156,7 +156,7 @@ func (client *ImmichClient) moveToAlbum(assetId string) error {
 
 	req.Header.Set("Content-Type", "application/json")
 
-	res, err := client.client.Do(req)
+	res, err := client.httpClient.Do(req)
 
 	if err != nil {
 		return err

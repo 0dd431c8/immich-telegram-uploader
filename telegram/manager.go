@@ -14,7 +14,7 @@ import (
 	"github.com/go-telegram/bot/models"
 )
 
-type OnUpload func(asset io.Reader, filename string) error
+type UploadFunc func(asset io.Reader, filename string) error
 
 type Manager struct {
 	telegramToken      string
@@ -23,37 +23,37 @@ type Manager struct {
 	onlyFileAttachment bool
 	bot                *bot.Bot
 	ctx                context.Context
-	onUpload           OnUpload
-	uploadStateChanged chan uploadStateMessage
+	upload             UploadFunc
+	uploadEvents       chan uploadEvent
 }
 
 type uploadState byte
 
 const (
-	started uploadState = iota
-	finished
+	uploadStarted uploadState = iota
+	uploadFinished
 )
 
-type uploadStateMessage struct {
+type uploadEvent struct {
 	chatId int64
 	state  uploadState
 }
 
-func New(cfg config.Config, ctx context.Context, onUpload OnUpload) Manager {
+func New(cfg config.Config, ctx context.Context, onUpload UploadFunc) Manager {
 	manager := Manager{
 		telegramToken:      cfg.TelegramToken,
 		adminUsername:      cfg.AdminUsername,
 		uploadsDisabled:    &atomic.Bool{},
 		onlyFileAttachment: cfg.OnlyFileAttachment,
 		ctx:                ctx,
-		onUpload:           onUpload,
-		uploadStateChanged: make(chan uploadStateMessage, 16),
+		upload:             onUpload,
+		uploadEvents:       make(chan uploadEvent, 16),
 	}
 
 	return manager
 }
 
-func (manager *Manager) SetupBot() {
+func (manager *Manager) Run() {
 	ctx := manager.ctx
 	b, err := bot.New(manager.telegramToken)
 
@@ -75,10 +75,10 @@ func (manager *Manager) SetupBot() {
 		panic(err)
 	}
 
-	manager.bot.RegisterHandler(bot.HandlerTypeMessageText, "start", bot.MatchTypeCommand, manager.onStartHandler)
-	manager.bot.RegisterHandler(bot.HandlerTypeMessageText, "enable", bot.MatchTypeCommand, manager.onSetDisabled(false))
-	manager.bot.RegisterHandler(bot.HandlerTypeMessageText, "disable", bot.MatchTypeCommand, manager.onSetDisabled(true))
-	manager.bot.RegisterHandler(bot.HandlerTypeMessageText, "", bot.MatchTypeExact, manager.onMessageHandler)
+	manager.bot.RegisterHandler(bot.HandlerTypeMessageText, "start", bot.MatchTypeCommand, manager.handleStart)
+	manager.bot.RegisterHandler(bot.HandlerTypeMessageText, "enable", bot.MatchTypeCommand, manager.uploadsDisabledHandler(false))
+	manager.bot.RegisterHandler(bot.HandlerTypeMessageText, "disable", bot.MatchTypeCommand, manager.uploadsDisabledHandler(true))
+	manager.bot.RegisterHandler(bot.HandlerTypeMessageText, "", bot.MatchTypeExact, manager.handleMessage)
 
 	go manager.watchUploadState(ctx)
 
@@ -86,17 +86,17 @@ func (manager *Manager) SetupBot() {
 }
 
 func (manager *Manager) watchUploadState(ctx context.Context) {
-	workers := make(map[int64]chan uploadStateMessage)
+	workers := make(map[int64]chan uploadEvent)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case msg := <-manager.uploadStateChanged:
+		case msg := <-manager.uploadEvents:
 			events, exists := workers[msg.chatId]
 
 			if !exists {
-				events = make(chan uploadStateMessage, 16)
+				events = make(chan uploadEvent, 16)
 				workers[msg.chatId] = events
 
 				go manager.watchChatUploads(ctx, msg.chatId, events)
@@ -111,14 +111,14 @@ func (manager *Manager) watchUploadState(ctx context.Context) {
 	}
 }
 
-func (manager *Manager) watchChatUploads(ctx context.Context, chatId int64, events <-chan uploadStateMessage) {
-	type uploadState struct {
+func (manager *Manager) watchChatUploads(ctx context.Context, chatId int64, events <-chan uploadEvent) {
+	type chatUploadProgress struct {
 		activeUploads uint
 		totalUploads  uint
 		messageId     int
 	}
 
-	userUpload := &uploadState{}
+	progress := &chatUploadProgress{}
 
 	renderProgressBar := func(total uint, active uint) string {
 		size := 10
@@ -140,14 +140,14 @@ func (manager *Manager) watchChatUploads(ctx context.Context, chatId int64, even
 		case msg := <-events:
 			state := msg.state
 
-			if state == started {
-				userUpload.activeUploads += 1
-				userUpload.totalUploads += 1
+			if state == uploadStarted {
+				progress.activeUploads += 1
+				progress.totalUploads += 1
 			} else {
-				userUpload.activeUploads -= 1
+				progress.activeUploads -= 1
 			}
 
-			if userUpload.messageId == 0 {
+			if progress.messageId == 0 {
 				msg, err := manager.sendMessage(
 					chatId,
 					"Uploading...",
@@ -157,16 +157,16 @@ func (manager *Manager) watchChatUploads(ctx context.Context, chatId int64, even
 					fmt.Println(err)
 				}
 
-				userUpload.messageId = msg.ID
+				progress.messageId = msg.ID
 			}
 
-			if userUpload.activeUploads > 0 {
+			if progress.activeUploads > 0 {
 				_, err := manager.bot.EditMessageText(ctx, &bot.EditMessageTextParams{
 					ChatID:    chatId,
-					MessageID: int(userUpload.messageId),
+					MessageID: int(progress.messageId),
 					Text: fmt.Sprintf(
 						"Uploading...\r\n%s",
-						renderProgressBar(userUpload.totalUploads, userUpload.activeUploads),
+						renderProgressBar(progress.totalUploads, progress.activeUploads),
 					),
 				})
 
@@ -176,7 +176,7 @@ func (manager *Manager) watchChatUploads(ctx context.Context, chatId int64, even
 			} else {
 				_, err := manager.bot.DeleteMessage(ctx, &bot.DeleteMessageParams{
 					ChatID:    chatId,
-					MessageID: userUpload.messageId,
+					MessageID: progress.messageId,
 				})
 
 				if err != nil {
@@ -185,22 +185,22 @@ func (manager *Manager) watchChatUploads(ctx context.Context, chatId int64, even
 
 				_, err = manager.sendMessage(
 					chatId,
-					fmt.Sprintf("✅ %d files uploaded successfully", userUpload.totalUploads),
+					fmt.Sprintf("✅ %d files uploaded successfully", progress.totalUploads),
 				)
 
 				if err != nil {
 					fmt.Println(err)
 				}
 
-				userUpload.totalUploads = 0
-				userUpload.messageId = 0
+				progress.totalUploads = 0
+				progress.messageId = 0
 
 			}
 		}
 	}
 }
 
-func (manager *Manager) onSetDisabled(disabled bool) func(ctx context.Context, b *bot.Bot, update *models.Update) {
+func (manager *Manager) uploadsDisabledHandler(disabled bool) func(ctx context.Context, b *bot.Bot, update *models.Update) {
 	admin := manager.adminUsername
 
 	return func(ctx context.Context, b *bot.Bot, update *models.Update) {
@@ -212,7 +212,7 @@ func (manager *Manager) onSetDisabled(disabled bool) func(ctx context.Context, b
 	}
 }
 
-func (manager *Manager) onStartHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
+func (manager *Manager) handleStart(ctx context.Context, b *bot.Bot, update *models.Update) {
 	attachmentModeText := ""
 
 	if manager.onlyFileAttachment {
@@ -242,7 +242,7 @@ func (manager *Manager) sendMessage(chatId int64, text string) (*models.Message,
 	return message, err
 }
 
-func downloadFile(ctx context.Context, b *bot.Bot, onUpload OnUpload, fileId string, filename string) error {
+func streamFileToUpload(ctx context.Context, b *bot.Bot, onUpload UploadFunc, fileId string, filename string) error {
 	file, err := b.GetFile(ctx, &bot.GetFileParams{
 		FileID: fileId,
 	})
@@ -272,20 +272,20 @@ func downloadFile(ctx context.Context, b *bot.Bot, onUpload OnUpload, fileId str
 	return onUpload(resp.Body, filename)
 }
 
-func (manager *Manager) processDocument(ctx context.Context, b *bot.Bot, onUpload OnUpload, chatId int64, document *models.Document) error {
+func (manager *Manager) processDocument(ctx context.Context, b *bot.Bot, onUpload UploadFunc, chatId int64, document *models.Document) error {
 	if mime := document.MimeType; !strings.HasPrefix(mime, "image/") && !strings.HasPrefix(mime, "video/") {
 		return errors.New("unsupported filetype")
 	}
 
 	select {
-	case manager.uploadStateChanged <- uploadStateMessage{chatId, started}:
+	case manager.uploadEvents <- uploadEvent{chatId, uploadStarted}:
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 
-	err := downloadFile(ctx, b, onUpload, document.FileID, document.FileName)
+	err := streamFileToUpload(ctx, b, onUpload, document.FileID, document.FileName)
 	select {
-	case manager.uploadStateChanged <- uploadStateMessage{chatId, finished}:
+	case manager.uploadEvents <- uploadEvent{chatId, uploadFinished}:
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -293,7 +293,7 @@ func (manager *Manager) processDocument(ctx context.Context, b *bot.Bot, onUploa
 	return err
 }
 
-func (manager *Manager) onMessageHandler(ctx context.Context, b *bot.Bot, update *models.Update) {
+func (manager *Manager) handleMessage(ctx context.Context, b *bot.Bot, update *models.Update) {
 	if update.Message == nil {
 		return
 	}
@@ -315,7 +315,7 @@ func (manager *Manager) onMessageHandler(ctx context.Context, b *bot.Bot, update
 
 	if update.Message.Document != nil {
 		go func() {
-			err := manager.processDocument(ctx, b, manager.onUpload, update.Message.Chat.ID, update.Message.Document)
+			err := manager.processDocument(ctx, b, manager.upload, update.Message.Chat.ID, update.Message.Document)
 
 			if err != nil {
 				fmt.Println(err)

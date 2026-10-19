@@ -10,7 +10,7 @@ import (
 
 type App struct {
 	config     config.Config
-	immich     immich.ImmichClient
+	immich     immich.Client
 	botManager telegram.Manager
 }
 
@@ -22,5 +22,5 @@ func New(cfg config.Config, ctx context.Context) App {
 }
 
 func (app *App) Start() {
-	app.botManager.SetupBot()
+	app.botManager.Run()
 }
