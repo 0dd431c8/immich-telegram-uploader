@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/0dd431c8/immich-telegram-upload/config"
 	"github.com/0dd431c8/immich-telegram-upload/immich"
@@ -14,9 +15,12 @@ type App struct {
 	botManager telegram.Manager
 }
 
-func New(cfg config.Config, ctx context.Context) App {
-	immich := immich.New(cfg, ctx)
-	botManager := telegram.New(cfg, ctx, immich.UploadAsset)
+func New(cfg config.Config, ctx context.Context, logger *slog.Logger) App {
+	immichLogger := logger.With("component", "immich")
+	telegramLogger := logger.With("component", "telegram")
+
+	immich := immich.New(cfg, ctx, immichLogger)
+	botManager := telegram.New(cfg, ctx, immich.UploadAsset, telegramLogger)
 
 	return App{cfg, immich, botManager}
 }

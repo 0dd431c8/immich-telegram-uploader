@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"os/signal"
 
@@ -23,7 +24,9 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
-	app := app.New(cfg, ctx)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	app := app.New(cfg, ctx, logger)
 
 	app.Start()
 }

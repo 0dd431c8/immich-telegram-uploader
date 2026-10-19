@@ -5,8 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
+	"log/slog"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -21,16 +21,17 @@ type Client struct {
 	apiUrl     string
 	token      string
 	albumId    string
+	logger     *slog.Logger
 }
 
 type Album struct {
 	Name string `json:"albumName"`
 }
 
-func New(cfg config.Config, ctx context.Context) Client {
+func New(cfg config.Config, ctx context.Context, logger *slog.Logger) Client {
 	client := http.Client{Timeout: 10 * time.Second}
 
-	return Client{client, ctx, cfg.ImmichAPIURL, cfg.ImmichToken, cfg.ImmichAlbumId}
+	return Client{client, ctx, cfg.ImmichAPIURL, cfg.ImmichToken, cfg.ImmichAlbumId, logger}
 }
 
 func (client *Client) prepareReq(method string, body io.Reader, path ...string) *http.Request {
@@ -59,37 +60,19 @@ func (client *Client) prepareReq(method string, body io.Reader, path ...string) 
 	return req
 }
 
-func (client *Client) GetAllAlbums() []string {
-	req := client.prepareReq(http.MethodGet, nil, "albums")
-
-	resp, err := client.httpClient.Do(req)
-
-	defer func() { _ = resp.Body.Close() }()
-
-	if err != nil {
-		panic(err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		panic(resp.StatusCode)
-	}
-
-	var result []Album
-
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		panic(err)
-	}
-
-	fmt.Println(result)
-
-	return []string{}
-}
-
 func (client *Client) UploadAsset(data io.Reader, filename string) error {
 	reader, writer := io.Pipe()
 	mw := multipart.NewWriter(writer)
 
 	go func() {
+		defer func() {
+			if err := mw.Close(); err != nil {
+				writer.CloseWithError(err)
+			} else {
+				_ = writer.Close()
+			}
+		}()
+
 		ts := time.Now().Format(time.RFC3339)
 
 		_ = mw.WriteField("fileCreatedAt", ts)
@@ -102,13 +85,7 @@ func (client *Client) UploadAsset(data io.Reader, filename string) error {
 		_, err := io.Copy(part, data)
 
 		if err != nil {
-			fmt.Println(err)
-		}
-
-		if err := mw.Close(); err != nil {
-			writer.CloseWithError(err)
-		} else {
-			_ = writer.Close()
+			client.logger.Error(err.Error())
 		}
 	}()
 
@@ -120,6 +97,12 @@ func (client *Client) UploadAsset(data io.Reader, filename string) error {
 
 	if err != nil {
 		return err
+	}
+
+	if resp.StatusCode > 201 {
+		r, _ := io.ReadAll(resp.Body)
+
+		return errors.New(string(r))
 	}
 
 	var result struct {
@@ -163,7 +146,7 @@ func (client *Client) addAssetToAlbum(assetId string) error {
 	}
 
 	if res.StatusCode > 201 {
-		return errors.New("failed to move to album")
+		return errors.New("failed to add to album")
 	}
 
 	return nil

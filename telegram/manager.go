@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -25,6 +26,7 @@ type Manager struct {
 	ctx                context.Context
 	upload             UploadFunc
 	uploadEvents       chan uploadEvent
+	logger             *slog.Logger
 }
 
 type uploadState byte
@@ -39,7 +41,7 @@ type uploadEvent struct {
 	state  uploadState
 }
 
-func New(cfg config.Config, ctx context.Context, onUpload UploadFunc) Manager {
+func New(cfg config.Config, ctx context.Context, onUpload UploadFunc, logger *slog.Logger) Manager {
 	manager := Manager{
 		telegramToken:      cfg.TelegramToken,
 		adminUsername:      cfg.AdminUsername,
@@ -48,6 +50,7 @@ func New(cfg config.Config, ctx context.Context, onUpload UploadFunc) Manager {
 		ctx:                ctx,
 		upload:             onUpload,
 		uploadEvents:       make(chan uploadEvent, 16),
+		logger:             logger,
 	}
 
 	return manager
@@ -119,6 +122,7 @@ func (manager *Manager) watchChatUploads(ctx context.Context, chatId int64, even
 	}
 
 	progress := &chatUploadProgress{}
+	logger := manager.logger.With("chat_id", chatId)
 
 	renderProgressBar := func(total uint, active uint) string {
 		size := 10
@@ -154,7 +158,7 @@ func (manager *Manager) watchChatUploads(ctx context.Context, chatId int64, even
 				)
 
 				if err != nil {
-					fmt.Println(err)
+					logger.Error("Failed to send a message", "error", err)
 				}
 
 				progress.messageId = msg.ID
@@ -171,7 +175,7 @@ func (manager *Manager) watchChatUploads(ctx context.Context, chatId int64, even
 				})
 
 				if err != nil {
-					fmt.Println(err)
+					logger.Error("Failed to edit message", "message_id", progress.messageId, "error", err)
 				}
 			} else {
 				_, err := manager.bot.DeleteMessage(ctx, &bot.DeleteMessageParams{
@@ -180,7 +184,7 @@ func (manager *Manager) watchChatUploads(ctx context.Context, chatId int64, even
 				})
 
 				if err != nil {
-					fmt.Println(err)
+					logger.Error("Failed to delete message", "message_id", progress.messageId, "error", err)
 				}
 
 				_, err = manager.sendMessage(
@@ -189,7 +193,7 @@ func (manager *Manager) watchChatUploads(ctx context.Context, chatId int64, even
 				)
 
 				if err != nil {
-					fmt.Println(err)
+					logger.Error("Failed to send message", "error", err)
 				}
 
 				progress.totalUploads = 0
@@ -208,6 +212,8 @@ func (manager *Manager) uploadsDisabledHandler(disabled bool) func(ctx context.C
 			return
 		}
 
+		manager.logger.Info("Set uploads disabled", "disabled", disabled)
+
 		manager.uploadsDisabled.Store(disabled)
 	}
 }
@@ -225,12 +231,16 @@ func (manager *Manager) handleStart(ctx context.Context, b *bot.Bot, update *mod
 		"to upload",
 	}, " ")
 
+	manager.logger.Info("New user", "telegram_handle", update.Message.Chat.Username)
+
 	_, err := manager.sendMessage(
 		update.Message.Chat.ID,
 		text,
 	)
 
-	fmt.Println(err)
+	if err != nil {
+		manager.logger.Error("Failed to send message", "error", err)
+	}
 }
 
 func (manager *Manager) sendMessage(chatId int64, text string) (*models.Message, error) {
@@ -306,7 +316,7 @@ func (manager *Manager) handleMessage(ctx context.Context, b *bot.Bot, update *m
 			)
 
 			if err != nil {
-				fmt.Println(err)
+				manager.logger.Error("Failed to send message", "error", err)
 			}
 		}()
 
@@ -315,11 +325,19 @@ func (manager *Manager) handleMessage(ctx context.Context, b *bot.Bot, update *m
 
 	if update.Message.Document != nil {
 		go func() {
+			logger := manager.logger.With("telegram_handle", update.Message.Chat.Username)
+
+			logger.Info("Processing document", "filename", update.Message.Document.FileName, "size", update.Message.Document.FileSize)
+
 			err := manager.processDocument(ctx, b, manager.upload, update.Message.Chat.ID, update.Message.Document)
 
 			if err != nil {
-				fmt.Println(err)
+				logger.Error("Failed to process document", "error", err)
+
+				return
 			}
+
+			logger.Info("Processing document finished", "telegram_handle", update.Message.Chat.Username)
 		}()
 		return
 	}
@@ -332,7 +350,7 @@ func (manager *Manager) handleMessage(ctx context.Context, b *bot.Bot, update *m
 			)
 
 			if err != nil {
-				fmt.Println(err)
+				manager.logger.Error("Failed to send message", "error", err)
 			}
 		}()
 	}
