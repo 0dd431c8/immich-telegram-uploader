@@ -7,8 +7,11 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/0dd431c8/immich-telegram-upload/config"
 	"github.com/go-telegram/bot"
@@ -27,6 +30,10 @@ type Manager struct {
 	upload             UploadFunc
 	uploadEvents       chan uploadEvent
 	logger             *slog.Logger
+
+	uploadControlMutex sync.Mutex
+	disableTimer       *time.Timer
+	timerGeneration    uint64
 }
 
 type uploadState byte
@@ -41,7 +48,7 @@ type uploadEvent struct {
 	state  uploadState
 }
 
-func New(cfg config.Config, ctx context.Context, onUpload UploadFunc, logger *slog.Logger) Manager {
+func New(cfg config.Config, ctx context.Context, onUpload UploadFunc, logger *slog.Logger) *Manager {
 	manager := Manager{
 		telegramToken:      cfg.TelegramToken,
 		adminUsername:      cfg.AdminUsername,
@@ -53,7 +60,7 @@ func New(cfg config.Config, ctx context.Context, onUpload UploadFunc, logger *sl
 		logger:             logger,
 	}
 
-	return manager
+	return &manager
 }
 
 func (manager *Manager) Run() {
@@ -79,7 +86,7 @@ func (manager *Manager) Run() {
 	}
 
 	manager.bot.RegisterHandler(bot.HandlerTypeMessageText, "start", bot.MatchTypeCommand, manager.handleStart)
-	manager.bot.RegisterHandler(bot.HandlerTypeMessageText, "enable", bot.MatchTypeCommand, manager.uploadsDisabledHandler(false))
+	manager.bot.RegisterHandler(bot.HandlerTypeMessageText, "enable", bot.MatchTypeCommandStartOnly, manager.uploadsDisabledHandler(false))
 	manager.bot.RegisterHandler(bot.HandlerTypeMessageText, "disable", bot.MatchTypeCommand, manager.uploadsDisabledHandler(true))
 	manager.bot.RegisterHandler(bot.HandlerTypeMessageText, "", bot.MatchTypeExact, manager.handleMessage)
 
@@ -112,6 +119,39 @@ func (manager *Manager) watchUploadState(ctx context.Context) {
 			}
 		}
 	}
+}
+
+func (manager *Manager) setUploadsEnabled(enabled bool, duration time.Duration) {
+	manager.uploadControlMutex.Lock()
+	defer manager.uploadControlMutex.Unlock()
+
+	manager.timerGeneration++
+
+	generation := manager.timerGeneration
+
+	if manager.disableTimer != nil {
+		manager.disableTimer.Stop()
+		manager.disableTimer = nil
+	}
+
+	manager.uploadsDisabled.Store(!enabled)
+
+	if !enabled || duration <= 0 {
+		return
+	}
+
+	manager.disableTimer = time.AfterFunc(duration, func() {
+		manager.uploadControlMutex.Lock()
+		defer manager.uploadControlMutex.Unlock()
+
+		if generation != manager.timerGeneration {
+			return
+		}
+
+		manager.disableTimer = nil
+		manager.uploadsDisabled.Store(true)
+		manager.logger.Info("Disabled on timer")
+	})
 }
 
 func (manager *Manager) watchChatUploads(ctx context.Context, chatId int64, events <-chan uploadEvent) {
@@ -214,7 +254,34 @@ func (manager *Manager) uploadsDisabledHandler(disabled bool) func(ctx context.C
 
 		manager.logger.Info("Set uploads disabled", "disabled", disabled)
 
-		manager.uploadsDisabled.Store(disabled)
+		if disabled {
+			manager.setUploadsEnabled(false, 0)
+		}
+
+		if !disabled {
+			msg := strings.Fields(update.Message.Text)
+			var duration time.Duration = 0
+
+			if len(msg) > 1 {
+				d, err := strconv.ParseUint(msg[1], 10, 8)
+
+				if err != nil {
+					_, err := manager.sendMessage(update.Message.Chat.ID, "Invalid duration")
+
+					if err != nil {
+						manager.logger.Error("Failed to send message", "error", err)
+					}
+
+					return
+				}
+
+				duration = time.Second * time.Duration(d)
+			}
+
+			manager.setUploadsEnabled(true, duration)
+
+			manager.logger.Info("Enabled for duration", "duration", duration/time.Second)
+		}
 	}
 }
 

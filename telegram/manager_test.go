@@ -19,7 +19,7 @@ import (
 	"github.com/go-telegram/bot/models"
 )
 
-func testManager(ctx context.Context) Manager {
+func testManager(ctx context.Context) *Manager {
 	return New(config.Config{AdminUsername: "admin"}, ctx, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
