@@ -22,7 +22,7 @@ type UploadFunc func(asset io.Reader, filename string, author string) error
 
 type Manager struct {
 	telegramToken      string
-	adminUsername      string
+	adminUserID        int64
 	uploadsDisabled    *atomic.Bool
 	onlyFileAttachment bool
 	bot                *bot.Bot
@@ -44,14 +44,15 @@ const (
 )
 
 type uploadEvent struct {
-	chatId int64
-	state  uploadState
+	chatId   int64
+	username string
+	state    uploadState
 }
 
 func New(cfg config.Config, ctx context.Context, onUpload UploadFunc, logger *slog.Logger) *Manager {
 	manager := Manager{
 		telegramToken:      cfg.TelegramToken,
-		adminUsername:      cfg.AdminUsername,
+		adminUserID:        cfg.TelegramAdminUserID,
 		uploadsDisabled:    &atomic.Bool{},
 		onlyFileAttachment: cfg.OnlyFileAttachment,
 		ctx:                ctx,
@@ -95,32 +96,6 @@ func (manager *Manager) Run() {
 	manager.bot.Start(ctx)
 }
 
-func (manager *Manager) watchUploadState(ctx context.Context) {
-	workers := make(map[int64]chan uploadEvent)
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case msg := <-manager.uploadEvents:
-			events, exists := workers[msg.chatId]
-
-			if !exists {
-				events = make(chan uploadEvent, 16)
-				workers[msg.chatId] = events
-
-				go manager.watchChatUploads(ctx, msg.chatId, events)
-			}
-
-			select {
-			case events <- msg:
-			case <-ctx.Done():
-				return
-			}
-		}
-	}
-}
-
 func (manager *Manager) setUploadsEnabled(enabled bool, duration time.Duration) {
 	manager.uploadControlMutex.Lock()
 	defer manager.uploadControlMutex.Unlock()
@@ -154,7 +129,33 @@ func (manager *Manager) setUploadsEnabled(enabled bool, duration time.Duration) 
 	})
 }
 
-func (manager *Manager) watchChatUploads(ctx context.Context, chatId int64, events <-chan uploadEvent) {
+func (manager *Manager) watchUploadState(ctx context.Context) {
+	workers := make(map[int64]chan uploadEvent)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg := <-manager.uploadEvents:
+			events, exists := workers[msg.chatId]
+
+			if !exists {
+				events = make(chan uploadEvent, 16)
+				workers[msg.chatId] = events
+
+				go manager.watchChatUploads(ctx, msg.chatId, msg.username, events)
+			}
+
+			select {
+			case events <- msg:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
+}
+
+func (manager *Manager) watchChatUploads(ctx context.Context, chatId int64, username string, events <-chan uploadEvent) {
 	type chatUploadProgress struct {
 		activeUploads uint
 		totalUploads  uint
@@ -162,7 +163,7 @@ func (manager *Manager) watchChatUploads(ctx context.Context, chatId int64, even
 	}
 
 	progress := &chatUploadProgress{}
-	logger := manager.logger.With("chat_id", chatId)
+	logger := manager.logger.With("username", username)
 
 	renderProgressBar := func(total uint, active uint) string {
 		size := 10
@@ -236,6 +237,16 @@ func (manager *Manager) watchChatUploads(ctx context.Context, chatId int64, even
 					logger.Error("Failed to send message", "error", err)
 				}
 
+				if chatId != manager.adminUserID {
+					_, err = manager.sendMessage(
+						manager.adminUserID,
+						fmt.Sprintf("%d uploads from %s", progress.totalUploads, username),
+					)
+					if err != nil {
+						logger.Error("Failed to notify admin", "admin_user_id", manager.adminUserID, "error", err)
+					}
+				}
+
 				progress.totalUploads = 0
 				progress.messageId = 0
 
@@ -245,10 +256,10 @@ func (manager *Manager) watchChatUploads(ctx context.Context, chatId int64, even
 }
 
 func (manager *Manager) uploadsDisabledHandler(disabled bool) func(ctx context.Context, b *bot.Bot, update *models.Update) {
-	admin := manager.adminUsername
+	admin := manager.adminUserID
 
 	return func(ctx context.Context, b *bot.Bot, update *models.Update) {
-		if update.Message.Chat.Username != admin {
+		if update.Message.Chat.ID != admin {
 			return
 		}
 
@@ -357,14 +368,14 @@ func (manager *Manager) processDocument(ctx context.Context, b *bot.Bot, onUploa
 	}
 
 	select {
-	case manager.uploadEvents <- uploadEvent{chatId, uploadStarted}:
+	case manager.uploadEvents <- uploadEvent{chatId, author, uploadStarted}:
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 
 	err := streamFileToUpload(ctx, b, onUpload, document.FileID, document.FileName, author)
 	select {
-	case manager.uploadEvents <- uploadEvent{chatId, uploadFinished}:
+	case manager.uploadEvents <- uploadEvent{chatId, author, uploadFinished}:
 	case <-ctx.Done():
 		return ctx.Err()
 	}

@@ -20,7 +20,7 @@ import (
 )
 
 func testManager(ctx context.Context) *Manager {
-	return New(config.Config{AdminUsername: "admin"}, ctx, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return New(config.Config{TelegramAdminUserID: 1234567890}, ctx, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 func testBot(t *testing.T, handler http.HandlerFunc) *bot.Bot {
@@ -186,7 +186,7 @@ func TestProcessDocumentFiltering(t *testing.T) {
 				for _, state := range []uploadState{uploadStarted, uploadFinished} {
 					select {
 					case event := <-manager.uploadEvents:
-						if event != (uploadEvent{42, state}) {
+						if event != (uploadEvent{42, "alice", state}) {
 							t.Errorf("event = %+v, want chat 42 state %v", event, state)
 						}
 					default:
@@ -237,16 +237,16 @@ func TestProcessDocumentCancellationWithFullEventQueue(t *testing.T) {
 func TestUploadsDisabledHandler(t *testing.T) {
 	manager := testManager(context.Background())
 	for _, tc := range []struct {
-		username string
-		disable  bool
-		want     bool
+		id      int64
+		disable bool
+		want    bool
 	}{
-		{"other", true, false}, {"admin", true, true},
-		{"other", false, true}, {"admin", false, false},
+		{9876543210, true, false}, {1234567890, true, true},
+		{9876543210, false, true}, {1234567890, false, false},
 	} {
-		manager.uploadsDisabledHandler(tc.disable)(context.Background(), nil, &models.Update{Message: &models.Message{Chat: models.Chat{Username: tc.username}}})
+		manager.uploadsDisabledHandler(tc.disable)(context.Background(), nil, &models.Update{Message: &models.Message{Chat: models.Chat{ID: tc.id}}})
 		if got := manager.uploadsDisabled.Load(); got != tc.want {
-			t.Errorf("user %q setting disabled=%v: got %v, want %v", tc.username, tc.disable, got, tc.want)
+			t.Errorf("user %d setting disabled=%v: got %v, want %v", tc.id, tc.disable, got, tc.want)
 		}
 	}
 }
@@ -265,8 +265,14 @@ func TestWatchChatUploadsProgressAndReset(t *testing.T) {
 		}
 		defer r.MultipartForm.RemoveAll()
 		method := strings.TrimPrefix(r.URL.Path, "/bottest-token/")
-		if r.FormValue("chat_id") != "42" {
-			t.Errorf("chat_id = %q, want 42", r.FormValue("chat_id"))
+		text := r.FormValue("text")
+		isAdminNotification := method == "sendMessage" && strings.HasSuffix(text, " uploads from alice")
+		wantChatID := "42"
+		if isAdminNotification {
+			wantChatID = "1234567890"
+		}
+		if r.FormValue("chat_id") != wantChatID {
+			t.Errorf("chat_id = %q, want %s", r.FormValue("chat_id"), wantChatID)
 		}
 		mu.Lock()
 		calls = append(calls, method+":"+r.FormValue("text"))
@@ -276,16 +282,16 @@ func TestWatchChatUploadsProgressAndReset(t *testing.T) {
 		} else {
 			_, _ = io.WriteString(w, `{"ok":true,"result":{"message_id":7}}`)
 		}
-		if strings.HasPrefix(r.FormValue("text"), "✅") {
+		if isAdminNotification {
 			completed <- struct{}{}
 		}
 	})
 	events := make(chan uploadEvent, 8)
 	for _, state := range []uploadState{uploadStarted, uploadStarted, uploadFinished, uploadFinished, uploadStarted, uploadFinished} {
-		events <- uploadEvent{42, state}
+		events <- uploadEvent{42, "alice", state}
 	}
 	done := make(chan struct{})
-	go func() { defer close(done); manager.watchChatUploads(ctx, 42, events) }()
+	go func() { defer close(done); manager.watchChatUploads(ctx, 42, "alice", events) }()
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -310,10 +316,12 @@ func TestWatchChatUploadsProgressAndReset(t *testing.T) {
 		"editMessageText:Uploading...\r\n[█████░░░░░] 1/2",
 		"deleteMessage:",
 		"sendMessage:✅ 2 files uploaded successfully",
+		"sendMessage:2 uploads from alice",
 		"sendMessage:Uploading...",
 		"editMessageText:Uploading...\r\n[░░░░░░░░░░] 0/1",
 		"deleteMessage:",
 		"sendMessage:✅ 1 files uploaded successfully",
+		"sendMessage:1 uploads from alice",
 	}
 	if !reflect.DeepEqual(calls, want) {
 		t.Errorf("progress calls = %q, want %q", calls, want)

@@ -7,7 +7,7 @@ import (
 
 type Config struct {
 	TelegramToken        string `env:"TELEGRAM_BOT_TOKEN,required"`
-	AdminUsername        string `env:"TELEGRAM_BOT_ADMIN_USERNAME,required"`
+	TelegramAdminUserID  int64  `env:"TELEGRAM_BOT_ADMIN_ID,required"`
 	ImmichAPIURL         string `env:"IMMICH_API_URL,required"`
 	ImmichToken          string `env:"IMMICH_TOKEN,required"`
 	ImmichPerClientAlbum bool   `env:"IMMICH_PER_CLIENT_ALBUM" envDefault:"false"`
