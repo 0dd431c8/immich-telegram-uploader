@@ -377,6 +377,11 @@ func (manager *Manager) handleMessage(ctx context.Context, b *bot.Bot, update *m
 		return
 	}
 
+	if update.Message.Chat.Username == "" {
+		manager.sendMessage(update.Message.Chat.ID, "🛑 You need a username to use this bot")
+		return
+	}
+
 	if manager.uploadsDisabled.Load() {
 		go func() {
 			_, err := manager.sendMessage(

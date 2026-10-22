@@ -17,7 +17,18 @@ import (
 )
 
 func testClient(ctx context.Context, apiURL, album string) Client {
-	return New(config.Config{ImmichAPIURL: apiURL, ImmichToken: "test-key", ImmichAlbumId: album}, ctx, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	perClientAlbum := album == ""
+
+	return New(
+		config.Config{
+			ImmichAPIURL:         apiURL,
+			ImmichToken:          "test-key",
+			ImmichAlbumId:        album,
+			ImmichPerClientAlbum: perClientAlbum,
+		},
+		ctx,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
 }
 
 func TestUploadAsset(t *testing.T) {
@@ -72,8 +83,33 @@ func TestUploadAsset(t *testing.T) {
 					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 						t.Error(err)
 					}
-					if !reflect.DeepEqual(body.AlbumIDs, []string{album}) || !reflect.DeepEqual(body.AssetIDs, []string{"asset-1"}) {
-						t.Errorf("album assignment = %+v", body)
+					expectedAlbum := album
+
+					if expectedAlbum == "" {
+						expectedAlbum = "created-album"
+					}
+
+					if !reflect.DeepEqual(body.AlbumIDs, []string{expectedAlbum}) || !reflect.DeepEqual(body.AssetIDs, []string{"asset-1"}) {
+						t.Errorf("expected %v, got %v", []string{expectedAlbum}, body)
+					}
+				case "/api/albums":
+					switch r.Method {
+					case http.MethodGet:
+						_, _ = io.WriteString(w, "[]")
+					case http.MethodPost:
+						var body struct {
+							AlbumName string `json:"albumName"`
+						}
+
+						if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+							t.Error(err)
+						}
+
+						if body.AlbumName != "@alice uploads" {
+							t.Errorf("unexpected album name")
+						}
+
+						_, _ = io.WriteString(w, `{"id": "created-album", "albumName": "@alice uploads"}`)
 					}
 				default:
 					t.Errorf("unexpected request: %s", r.URL.Path)
@@ -86,9 +122,13 @@ func TestUploadAsset(t *testing.T) {
 				t.Fatal(err)
 			}
 			want := []string{"POST /api/assets", "PUT /api/assets/asset-1"}
-			if album != "" {
-				want = append(want, "PUT /api/albums/assets")
+
+			if album == "" {
+				want = append(want, "GET /api/albums")
+				want = append(want, "POST /api/albums")
 			}
+
+			want = append(want, "PUT /api/albums/assets")
 			if !reflect.DeepEqual(requests, want) {
 				t.Errorf("requests = %v, want %v", requests, want)
 			}
@@ -184,7 +224,7 @@ func TestClientClosesResponseBodies(t *testing.T) {
 				case "description":
 					_ = client.setAssetDescription("asset-1", "description")
 				case "album":
-					_ = client.addAssetToAlbum("asset-1")
+					_ = client.addAssetToAlbum("asset-1", client.albumID)
 				}
 				if len(bodies) == 0 {
 					t.Fatal("no HTTP requests made")
@@ -209,7 +249,7 @@ func TestClientCancellation(t *testing.T) {
 	client := testClient(ctx, server.URL, "album-1")
 	for _, operation := range []func() error{
 		func() error { return client.setAssetDescription("asset-1", "description") },
-		func() error { return client.addAssetToAlbum("asset-1") },
+		func() error { return client.addAssetToAlbum("asset-1", client.albumID) },
 	} {
 		if err := operation(); !errors.Is(err, context.Canceled) {
 			t.Errorf("error = %v, want context.Canceled", err)

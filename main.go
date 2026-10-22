@@ -21,6 +21,12 @@ func main() {
 		panic(err)
 	}
 
+	err = cfg.Validate()
+
+	if err != nil {
+		panic(err)
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
