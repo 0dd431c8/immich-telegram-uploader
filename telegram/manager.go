@@ -274,7 +274,7 @@ func (manager *Manager) uploadsDisabledHandler(disabled bool) func(ctx context.C
 			var duration time.Duration = 0
 
 			if len(msg) > 1 {
-				d, err := strconv.ParseUint(msg[1], 10, 8)
+				d, err := strconv.ParseUint(msg[1], 10, 32)
 
 				if err != nil {
 					_, err := manager.sendMessage(update.Message.Chat.ID, "Invalid duration")
