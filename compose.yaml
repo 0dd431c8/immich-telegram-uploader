@@ -1,0 +1,11 @@
+services:
+  immich-telegram-upload:
+    build: .
+    env_file: .env
+    restart: unless-stopped
+    stop_signal: SIGINT
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

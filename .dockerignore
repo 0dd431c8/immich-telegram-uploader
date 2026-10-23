@@ -1,0 +1,7 @@
+.env
+.env.*
+.git
+.agents
+.codex
+.aws
+.DS_Store
