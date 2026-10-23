@@ -183,11 +183,11 @@ func TestProcessDocumentFiltering(t *testing.T) {
 				if err != nil || !called {
 					t.Fatalf("accepted document: upload called = %v, error = %v", called, err)
 				}
-				for _, state := range []uploadState{uploadStarted, uploadFinished} {
+				for _, want := range []uploadEvent{uploadStarted{id: 42, username: "alice"}, uploadFinished{id: 42}} {
 					select {
 					case event := <-manager.uploadEvents:
-						if event != (uploadEvent{42, "alice", state}) {
-							t.Errorf("event = %+v, want chat 42 state %v", event, state)
+						if event != want {
+							t.Errorf("event = %#v, want %#v", event, want)
 						}
 					default:
 						t.Fatal("missing upload event")
@@ -208,11 +208,11 @@ func TestProcessDocumentFinishesAfterUploadFailure(t *testing.T) {
 	if !errors.Is(err, want) {
 		t.Errorf("error = %v, want %v", err, want)
 	}
-	for _, state := range []uploadState{uploadStarted, uploadFinished} {
+	for _, want := range []uploadEvent{uploadStarted{id: 42, username: "alice"}, uploadFinished{id: 42}} {
 		select {
 		case event := <-manager.uploadEvents:
-			if event.state != state {
-				t.Errorf("state = %v, want %v", event.state, state)
+			if event != want {
+				t.Errorf("event = %#v, want %#v", event, want)
 			}
 		default:
 			t.Fatal("missing upload event after failure")
@@ -224,7 +224,7 @@ func TestProcessDocumentCancellationWithFullEventQueue(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	manager := testManager(ctx)
 	for i := 0; i < cap(manager.uploadEvents); i++ {
-		manager.uploadEvents <- uploadEvent{}
+		manager.uploadEvents <- uploadStarted{}
 	}
 	cancel()
 	// A nil bot ensures cancellation returns before any Telegram request.
@@ -287,8 +287,15 @@ func TestWatchChatUploadsProgressAndReset(t *testing.T) {
 		}
 	})
 	events := make(chan uploadEvent, 8)
-	for _, state := range []uploadState{uploadStarted, uploadStarted, uploadFinished, uploadFinished, uploadStarted, uploadFinished} {
-		events <- uploadEvent{42, "alice", state}
+	for _, event := range []uploadEvent{
+		uploadStarted{id: 42, username: "alice"},
+		uploadStarted{id: 42, username: "alice"},
+		uploadFinished{id: 42},
+		uploadFinished{id: 42},
+		uploadStarted{id: 42, username: "alice"},
+		uploadFinished{id: 42},
+	} {
+		events <- event
 	}
 	done := make(chan struct{})
 	go func() { defer close(done); manager.watchChatUploads(ctx, 42, "alice", events) }()

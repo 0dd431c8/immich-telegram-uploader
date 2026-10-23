@@ -36,17 +36,29 @@ type Manager struct {
 	timerGeneration    uint64
 }
 
-type uploadState byte
+type uploadEvent interface {
+	isUploadEvent()
+	ChatID() int64
+}
 
-const (
-	uploadStarted uploadState = iota
-	uploadFinished
-)
-
-type uploadEvent struct {
-	chatId   int64
+type uploadStarted struct {
+	id       int64
 	username string
-	state    uploadState
+	fileSize int64
+}
+
+func (uploadStarted) isUploadEvent() {}
+func (e uploadStarted) ChatID() int64 {
+	return e.id
+}
+
+type uploadFinished struct {
+	id int64
+}
+
+func (uploadFinished) isUploadEvent() {}
+func (e uploadFinished) ChatID() int64 {
+	return e.id
 }
 
 func New(cfg config.Config, ctx context.Context, onUpload UploadFunc, logger *slog.Logger) *Manager {
@@ -137,13 +149,19 @@ func (manager *Manager) watchUploadState(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case msg := <-manager.uploadEvents:
-			events, exists := workers[msg.chatId]
+			events, exists := workers[msg.ChatID()]
 
 			if !exists {
-				events = make(chan uploadEvent, 16)
-				workers[msg.chatId] = events
+				started, ok := msg.(uploadStarted)
 
-				go manager.watchChatUploads(ctx, msg.chatId, msg.username, events)
+				if !ok {
+					continue
+				}
+
+				events = make(chan uploadEvent, 16)
+				workers[started.id] = events
+
+				go manager.watchChatUploads(ctx, started.id, started.username, events)
 			}
 
 			select {
@@ -183,12 +201,11 @@ func (manager *Manager) watchChatUploads(ctx context.Context, chatId int64, user
 		case <-ctx.Done():
 			return
 		case msg := <-events:
-			state := msg.state
-
-			if state == uploadStarted {
+			switch msg.(type) {
+			case uploadStarted:
 				progress.activeUploads += 1
 				progress.totalUploads += 1
-			} else {
+			case uploadFinished:
 				progress.activeUploads -= 1
 			}
 
@@ -368,14 +385,14 @@ func (manager *Manager) processDocument(ctx context.Context, b *bot.Bot, onUploa
 	}
 
 	select {
-	case manager.uploadEvents <- uploadEvent{chatId, author, uploadStarted}:
+	case manager.uploadEvents <- uploadStarted{chatId, author, 0}:
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 
 	err := streamFileToUpload(ctx, b, onUpload, document.FileID, document.FileName, author)
 	select {
-	case manager.uploadEvents <- uploadEvent{chatId, author, uploadFinished}:
+	case manager.uploadEvents <- uploadFinished{chatId}:
 	case <-ctx.Done():
 		return ctx.Err()
 	}
