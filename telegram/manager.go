@@ -32,6 +32,7 @@ type Manager struct {
 	logger             *slog.Logger
 
 	uploadControlMutex sync.Mutex
+	nextUploadID       atomic.Int64
 	disableTimer       *time.Timer
 	timerGeneration    uint64
 }
@@ -42,23 +43,34 @@ type uploadEvent interface {
 }
 
 type uploadStarted struct {
-	id       int64
+	chatID   int64
+	uploadID int64
 	username string
 	fileSize int64
+	sent     *atomic.Int64
 }
 
 func (uploadStarted) isUploadEvent() {}
 func (e uploadStarted) ChatID() int64 {
-	return e.id
+	return e.chatID
 }
 
 type uploadFinished struct {
-	id int64
+	chatID   int64
+	uploadID int64
+	err      error
 }
 
 func (uploadFinished) isUploadEvent() {}
 func (e uploadFinished) ChatID() int64 {
-	return e.id
+	return e.chatID
+}
+
+type uploadProgress struct {
+	chatID   int64
+	uploadID int64
+	sent     int64
+	total    int64
 }
 
 func New(cfg config.Config, ctx context.Context, onUpload UploadFunc, logger *slog.Logger) *Manager {
@@ -159,9 +171,9 @@ func (manager *Manager) watchUploadState(ctx context.Context) {
 				}
 
 				events = make(chan uploadEvent, 16)
-				workers[started.id] = events
+				workers[started.chatID] = events
 
-				go manager.watchChatUploads(ctx, started.id, started.username, events)
+				go manager.watchChatUploads(ctx, started.chatID, started.username, events)
 			}
 
 			select {
@@ -173,101 +185,162 @@ func (manager *Manager) watchUploadState(ctx context.Context) {
 	}
 }
 
-func (manager *Manager) watchChatUploads(ctx context.Context, chatId int64, username string, events <-chan uploadEvent) {
-	type chatUploadProgress struct {
-		activeUploads uint
-		totalUploads  uint
-		messageId     int
+func (manager *Manager) watchChatUploads(ctx context.Context, chatID int64, username string, events <-chan uploadEvent) {
+	type upload struct {
+		total    int64
+		sent     *atomic.Int64
+		finished bool
+		err      error
 	}
 
-	progress := &chatUploadProgress{}
+	type chatUploadProgress struct {
+		perFileProgress map[int64]upload
+		messageID       int
+		lastText        string
+	}
+
+	progress := &chatUploadProgress{
+		perFileProgress: make(map[int64]upload),
+	}
+
 	logger := manager.logger.With("username", username)
 
-	renderProgressBar := func(total uint, active uint) string {
+	renderProgressBar := func() string {
 		size := 10
 
-		progress := float32(total-active) / float32(total)
+		var sent, total int64
+
+		formatBytes := func(bytes int64) float32 {
+			mb := float32(bytes) / 1024 / 1024
+
+			return mb
+		}
+
+		for _, p := range progress.perFileProgress {
+			sent += p.sent.Load()
+			total += p.total
+		}
+
+		progress := float32(0)
+
+		if total > 0 {
+			progress = float32(sent) / float32(total)
+		}
 
 		filled := int(float32(size) * progress)
+		filled = max(0, min(size, filled))
 
 		bar := strings.Repeat("█", filled)
 		bar += strings.Repeat("░", size-filled)
 
-		return fmt.Sprintf("[%s] %d/%d", bar, total-active, total)
+		return fmt.Sprintf("[%s] %.2f/%.2fMB", bar, formatBytes(sent), formatBytes(total))
 	}
+
+	updateEvery := 100 * time.Millisecond
+
+	ticker := time.NewTicker(updateEvery)
+	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case msg := <-events:
-			switch msg.(type) {
+			switch e := msg.(type) {
 			case uploadStarted:
-				progress.activeUploads += 1
-				progress.totalUploads += 1
+				progress.perFileProgress[e.uploadID] = upload{total: e.fileSize, sent: e.sent}
 			case uploadFinished:
-				progress.activeUploads -= 1
-			}
+				p, exists := progress.perFileProgress[e.uploadID]
 
-			if progress.messageId == 0 {
-				msg, err := manager.sendMessage(
-					chatId,
-					"Uploading...",
-				)
-
-				if err != nil {
-					logger.Error("Failed to send a message", "error", err)
+				if !exists {
+					continue
 				}
 
-				progress.messageId = msg.ID
+				p.finished = true
+				p.err = e.err
+
+				progress.perFileProgress[e.uploadID] = p
+			}
+		case <-ticker.C:
+			if len(progress.perFileProgress) == 0 {
+				continue
 			}
 
-			if progress.activeUploads > 0 {
+			allFinished := true
+			succeeded, failed := 0, 0
+
+			for _, p := range progress.perFileProgress {
+				if !p.finished {
+					allFinished = false
+					continue
+				}
+
+				if p.err != nil {
+					failed += 1
+				} else {
+					succeeded += 1
+				}
+			}
+
+			text := fmt.Sprintf("Uploading...\r\n%s", renderProgressBar())
+
+			if allFinished {
+				text = fmt.Sprintf(
+					"✅ %d files uploaded successfully",
+					succeeded,
+				)
+
+				if failed > 0 {
+					text += fmt.Sprintf("\n❌ %d files failed", failed)
+				}
+			}
+
+			if progress.messageID == 0 {
+				msg, err := manager.sendMessage(chatID, text)
+
+				if err != nil {
+					logger.Error("Failed to send progress message", "error", err)
+					continue
+				}
+
+				progress.messageID = msg.ID
+				progress.lastText = text
+			} else if text != progress.lastText {
 				_, err := manager.bot.EditMessageText(ctx, &bot.EditMessageTextParams{
-					ChatID:    chatId,
-					MessageID: int(progress.messageId),
-					Text: fmt.Sprintf(
-						"Uploading...\r\n%s",
-						renderProgressBar(progress.totalUploads, progress.activeUploads),
+					ChatID:    chatID,
+					MessageID: int(progress.messageID),
+					Text:      text,
+				})
+
+				if err != nil {
+					logger.Error("Failed to edit message", "message_id", progress.messageID, "error", err)
+					continue
+				}
+
+				progress.lastText = text
+			}
+
+			if !allFinished {
+				continue
+			}
+
+			if chatID != manager.adminUserID {
+				_, err := manager.sendMessage(
+					manager.adminUserID,
+					fmt.Sprintf(
+						"Uploads from %s: %d succeeded, %d failed",
+						username, succeeded, failed,
 					),
-				})
-
-				if err != nil {
-					logger.Error("Failed to edit message", "message_id", progress.messageId, "error", err)
-				}
-			} else {
-				_, err := manager.bot.DeleteMessage(ctx, &bot.DeleteMessageParams{
-					ChatID:    chatId,
-					MessageID: progress.messageId,
-				})
-
-				if err != nil {
-					logger.Error("Failed to delete message", "message_id", progress.messageId, "error", err)
-				}
-
-				_, err = manager.sendMessage(
-					chatId,
-					fmt.Sprintf("✅ %d files uploaded successfully", progress.totalUploads),
 				)
 
 				if err != nil {
-					logger.Error("Failed to send message", "error", err)
+					logger.Error("Failed to notify admin", "error", err)
 				}
-
-				if chatId != manager.adminUserID {
-					_, err = manager.sendMessage(
-						manager.adminUserID,
-						fmt.Sprintf("%d uploads from %s", progress.totalUploads, username),
-					)
-					if err != nil {
-						logger.Error("Failed to notify admin", "admin_user_id", manager.adminUserID, "error", err)
-					}
-				}
-
-				progress.totalUploads = 0
-				progress.messageId = 0
-
 			}
+
+			progress.perFileProgress = make(map[int64]upload)
+			progress.messageID = 0
+			progress.lastText = ""
 		}
 	}
 }
@@ -394,20 +467,47 @@ func streamFileToUpload(
 	return onUpload(progressReader, filename, author)
 }
 
-func (manager *Manager) processDocument(ctx context.Context, b *bot.Bot, onUpload UploadFunc, author string, chatId int64, document *models.Document) error {
+func (manager *Manager) processDocument(ctx context.Context, b *bot.Bot, onUpload UploadFunc, author string, chatID int64, document *models.Document) error {
 	if mime := document.MimeType; !strings.HasPrefix(mime, "image/") && !strings.HasPrefix(mime, "video/") {
 		return errors.New("unsupported filetype")
 	}
 
+	uploadID := manager.nextUploadID.Add(1)
+	sentBytes := &atomic.Int64{}
+
 	select {
-	case manager.uploadEvents <- uploadStarted{chatId, author, 0}:
+	case manager.uploadEvents <- uploadStarted{
+		chatID:   chatID,
+		uploadID: uploadID,
+		username: author,
+		fileSize: document.FileSize,
+		sent:     sentBytes,
+	}:
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 
-	err := streamFileToUpload(ctx, b, document.FileID, document.FileName, document.FileSize, author, onUpload, nil)
+	onProgress := func(sent, total int64) {
+		sentBytes.Store(sent)
+	}
+
+	err := streamFileToUpload(
+		ctx,
+		b,
+		document.FileID,
+		document.FileName,
+		document.FileSize,
+		author,
+		onUpload,
+		onProgress,
+	)
+
 	select {
-	case manager.uploadEvents <- uploadFinished{chatId}:
+	case manager.uploadEvents <- uploadFinished{
+		chatID:   chatID,
+		uploadID: uploadID,
+		err:      err,
+	}:
 	case <-ctx.Done():
 		return ctx.Err()
 	}

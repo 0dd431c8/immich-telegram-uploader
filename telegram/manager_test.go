@@ -8,9 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"strings"
-	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -178,20 +177,17 @@ func TestProcessDocumentFiltering(t *testing.T) {
 			err := manager.processDocument(context.Background(), b, func(io.Reader, string, string) error {
 				called = true
 				return nil
-			}, "alice", 42, &models.Document{FileID: "file-1", FileName: "photo.jpg", MimeType: tc.mime})
+			}, "alice", 42, &models.Document{FileID: "file-1", FileName: "photo.jpg", FileSize: 13, MimeType: tc.mime})
 			if tc.want {
 				if err != nil || !called {
 					t.Fatalf("accepted document: upload called = %v, error = %v", called, err)
 				}
-				for _, want := range []uploadEvent{uploadStarted{id: 42, username: "alice"}, uploadFinished{id: 42}} {
-					select {
-					case event := <-manager.uploadEvents:
-						if event != want {
-							t.Errorf("event = %#v, want %#v", event, want)
-						}
-					default:
-						t.Fatal("missing upload event")
-					}
+				started, finished := readUploadEvents(t, manager)
+				if started.ChatID() != 42 || started.username != "alice" || started.fileSize != 13 || started.sent.Load() != 0 {
+					t.Errorf("start event = %+v, sent = %d", started, started.sent.Load())
+				}
+				if finished.err != nil {
+					t.Errorf("finish error = %v", finished.err)
 				}
 			} else if err == nil || called || len(manager.uploadEvents) != 0 {
 				t.Errorf("unsupported document: upload called = %v, error = %v, events = %d", called, err, len(manager.uploadEvents))
@@ -208,15 +204,12 @@ func TestProcessDocumentFinishesAfterUploadFailure(t *testing.T) {
 	if !errors.Is(err, want) {
 		t.Errorf("error = %v, want %v", err, want)
 	}
-	for _, want := range []uploadEvent{uploadStarted{id: 42, username: "alice"}, uploadFinished{id: 42}} {
-		select {
-		case event := <-manager.uploadEvents:
-			if event != want {
-				t.Errorf("event = %#v, want %#v", event, want)
-			}
-		default:
-			t.Fatal("missing upload event after failure")
-		}
+	started, finished := readUploadEvents(t, manager)
+	if started.ChatID() != 42 || started.username != "alice" || started.sent.Load() != 0 {
+		t.Errorf("start event = %+v", started)
+	}
+	if !errors.Is(finished.err, want) {
+		t.Errorf("finish error = %v, want %v", finished.err, want)
 	}
 }
 
@@ -251,54 +244,92 @@ func TestUploadsDisabledHandler(t *testing.T) {
 	}
 }
 
-func TestWatchChatUploadsProgressAndReset(t *testing.T) {
+func readUploadEvents(t *testing.T, manager *Manager) (uploadStarted, uploadFinished) {
+	t.Helper()
+	var started uploadStarted
+	select {
+	case event := <-manager.uploadEvents:
+		var ok bool
+		started, ok = event.(uploadStarted)
+		if !ok || started.uploadID == 0 || started.sent == nil {
+			t.Fatalf("invalid start event: %#v", event)
+		}
+	default:
+		t.Fatal("missing start event")
+	}
+	select {
+	case event := <-manager.uploadEvents:
+		finished, ok := event.(uploadFinished)
+		if !ok || finished.uploadID != started.uploadID || finished.ChatID() != started.ChatID() {
+			t.Fatalf("finish event = %#v, start = %#v", event, started)
+		}
+		if len(manager.uploadEvents) != 0 {
+			t.Fatal("unexpected extra upload events")
+		}
+		return started, finished
+	default:
+		t.Fatal("missing finish event")
+		return started, uploadFinished{}
+	}
+}
+
+func TestProcessDocumentTracksBytesWithoutProgressEvents(t *testing.T) {
+	manager := testManager(context.Background())
+	b := testBot(t, fileServer)
+	var previousID int64
+	for i := 0; i < 2; i++ {
+		err := manager.processDocument(context.Background(), b, func(data io.Reader, _, _ string) error {
+			_, err := io.Copy(io.Discard, data)
+			return err
+		}, "alice", 42, &models.Document{FileID: "file-1", FileSize: 13, MimeType: "image/jpeg"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		started, finished := readUploadEvents(t, manager)
+		if started.sent.Load() != 13 || started.fileSize != 13 || finished.err != nil {
+			t.Errorf("start = %+v, bytes = %d, finish = %+v", started, started.sent.Load(), finished)
+		}
+		if started.uploadID <= previousID {
+			t.Fatalf("upload ID %d did not increase from %d", started.uploadID, previousID)
+		}
+		previousID = started.uploadID
+	}
+}
+
+type progressCall struct {
+	method, chatID, messageID, text string
+	failed                          bool
+}
+
+func startProgressWatcher(t *testing.T, reject func(progressCall) bool) (chan uploadEvent, <-chan progressCall) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	manager := testManager(ctx)
-	var mu sync.Mutex
-	var calls []string
-	completed := make(chan struct{}, 2)
+	calls := make(chan progressCall, 64)
 	manager.bot = testBot(t, func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseMultipartForm(1 << 20); err != nil {
 			t.Error(err)
 			return
 		}
 		defer r.MultipartForm.RemoveAll()
-		method := strings.TrimPrefix(r.URL.Path, "/bottest-token/")
-		text := r.FormValue("text")
-		isAdminNotification := method == "sendMessage" && strings.HasSuffix(text, " uploads from alice")
-		wantChatID := "42"
-		if isAdminNotification {
-			wantChatID = "1234567890"
+		call := progressCall{
+			method: strings.TrimPrefix(r.URL.Path, "/bottest-token/"),
+			chatID: r.FormValue("chat_id"), messageID: r.FormValue("message_id"), text: r.FormValue("text"),
 		}
-		if r.FormValue("chat_id") != wantChatID {
-			t.Errorf("chat_id = %q, want %s", r.FormValue("chat_id"), wantChatID)
-		}
-		mu.Lock()
-		calls = append(calls, method+":"+r.FormValue("text"))
-		mu.Unlock()
-		if method == "deleteMessage" {
-			_, _ = io.WriteString(w, `{"ok":true,"result":true}`)
+		call.failed = reject != nil && reject(call)
+		if call.failed {
+			_, _ = io.WriteString(w, `{"ok":false,"error_code":500,"description":"temporary failure"}`)
 		} else {
 			_, _ = io.WriteString(w, `{"ok":true,"result":{"message_id":7}}`)
 		}
-		if isAdminNotification {
-			completed <- struct{}{}
-		}
+		calls <- call
 	})
-	events := make(chan uploadEvent, 8)
-	for _, event := range []uploadEvent{
-		uploadStarted{id: 42, username: "alice"},
-		uploadStarted{id: 42, username: "alice"},
-		uploadFinished{id: 42},
-		uploadFinished{id: 42},
-		uploadStarted{id: 42, username: "alice"},
-		uploadFinished{id: 42},
-	} {
-		events <- event
-	}
+	events := make(chan uploadEvent, 16)
 	done := make(chan struct{})
-	go func() { defer close(done); manager.watchChatUploads(ctx, 42, "alice", events) }()
+	go func() {
+		defer close(done)
+		manager.watchChatUploads(ctx, 42, "alice", events)
+	}()
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -307,30 +338,84 @@ func TestWatchChatUploadsProgressAndReset(t *testing.T) {
 			t.Error("progress watcher did not stop after cancellation")
 		}
 	})
-	for i := 0; i < 2; i++ {
-		select {
-		case <-completed:
-		case <-time.After(3 * time.Second):
-			t.Fatal("timed out waiting for batch completion")
+	return events, calls
+}
+
+func expectProgressCall(t *testing.T, calls <-chan progressCall, method, chatID, text string, failed bool) {
+	t.Helper()
+	select {
+	case call := <-calls:
+		if call.method != method || call.chatID != chatID || call.text != text || call.failed != failed {
+			t.Fatalf("call = %+v, want %s to %s: %q (failed=%v)", call, method, chatID, text, failed)
 		}
+		if method == "editMessageText" && call.messageID != "7" {
+			t.Fatalf("edited message %q, want 7", call.messageID)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timed out waiting for %s: %q", method, text)
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	want := []string{
-		"sendMessage:Uploading...",
-		"editMessageText:Uploading...\r\n[░░░░░░░░░░] 0/1",
-		"editMessageText:Uploading...\r\n[░░░░░░░░░░] 0/2",
-		"editMessageText:Uploading...\r\n[█████░░░░░] 1/2",
-		"deleteMessage:",
-		"sendMessage:✅ 2 files uploaded successfully",
-		"sendMessage:2 uploads from alice",
-		"sendMessage:Uploading...",
-		"editMessageText:Uploading...\r\n[░░░░░░░░░░] 0/1",
-		"deleteMessage:",
-		"sendMessage:✅ 1 files uploaded successfully",
-		"sendMessage:1 uploads from alice",
+}
+
+func TestWatchChatUploadsProgressAndReset(t *testing.T) {
+	events, calls := startProgressWatcher(t, nil)
+	first, second := &atomic.Int64{}, &atomic.Int64{}
+	events <- uploadStarted{chatID: 42, uploadID: 1, fileSize: 1 << 20, sent: first}
+	events <- uploadStarted{chatID: 42, uploadID: 2, fileSize: 1 << 20, sent: second}
+	expectProgressCall(t, calls, "sendMessage", "42", "Uploading...\r\n[░░░░░░░░░░] 0.00/2.00MB", false)
+
+	first.Store(1 << 20)
+	second.Store(1 << 20)
+	expectProgressCall(t, calls, "editMessageText", "42", "Uploading...\r\n[██████████] 2.00/2.00MB", false)
+	// Multiple ticks at full byte progress must neither complete nor resend unchanged text.
+	select {
+	case call := <-calls:
+		t.Fatalf("unexpected call before finish events: %+v", call)
+	case <-time.After(1200 * time.Millisecond):
 	}
-	if !reflect.DeepEqual(calls, want) {
-		t.Errorf("progress calls = %q, want %q", calls, want)
-	}
+	events <- uploadFinished{chatID: 42, uploadID: 1}
+	events <- uploadFinished{chatID: 42, uploadID: 2, err: errors.New("album update failed")}
+	expectProgressCall(t, calls, "editMessageText", "42", "✅ 1 files uploaded successfully\n❌ 1 files failed", false)
+	expectProgressCall(t, calls, "sendMessage", "1234567890", "Uploads from alice: 1 succeeded, 1 failed", false)
+
+	// A later batch gets its own message and excludes the previous batch's counts.
+	events <- uploadStarted{chatID: 42, uploadID: 3, fileSize: 1 << 20, sent: &atomic.Int64{}}
+	expectProgressCall(t, calls, "sendMessage", "42", "Uploading...\r\n[░░░░░░░░░░] 0.00/1.00MB", false)
+	events <- uploadFinished{chatID: 42, uploadID: 3}
+	expectProgressCall(t, calls, "editMessageText", "42", "✅ 1 files uploaded successfully", false)
+	expectProgressCall(t, calls, "sendMessage", "1234567890", "Uploads from alice: 1 succeeded, 0 failed", false)
+}
+
+func TestWatchChatUploadsRetriesInitialSendAfterFinish(t *testing.T) {
+	rejected := false
+	events, calls := startProgressWatcher(t, func(call progressCall) bool {
+		if call.chatID == "42" && !rejected {
+			rejected = true
+			return true
+		}
+		return false
+	})
+	events <- uploadStarted{chatID: 42, uploadID: 1, sent: &atomic.Int64{}}
+	events <- uploadFinished{chatID: 42, uploadID: 1, err: errors.New("download failed")}
+	const result = "✅ 0 files uploaded successfully\n❌ 1 files failed"
+	expectProgressCall(t, calls, "sendMessage", "42", result, true)
+	// No further upload events arrive to trigger the retry.
+	expectProgressCall(t, calls, "sendMessage", "42", result, false)
+	expectProgressCall(t, calls, "sendMessage", "1234567890", "Uploads from alice: 0 succeeded, 1 failed", false)
+}
+
+func TestWatchChatUploadsRetriesCompletionEdit(t *testing.T) {
+	rejected := false
+	events, calls := startProgressWatcher(t, func(call progressCall) bool {
+		if call.method == "editMessageText" && !rejected {
+			rejected = true
+			return true
+		}
+		return false
+	})
+	events <- uploadStarted{chatID: 42, uploadID: 1, sent: &atomic.Int64{}}
+	expectProgressCall(t, calls, "sendMessage", "42", "Uploading...\r\n[░░░░░░░░░░] 0.00/0.00MB", false)
+	events <- uploadFinished{chatID: 42, uploadID: 1}
+	expectProgressCall(t, calls, "editMessageText", "42", "✅ 1 files uploaded successfully", true)
+	expectProgressCall(t, calls, "editMessageText", "42", "✅ 1 files uploaded successfully", false)
+	expectProgressCall(t, calls, "sendMessage", "1234567890", "Uploads from alice: 1 succeeded, 0 failed", false)
 }
