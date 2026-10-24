@@ -4,9 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
-	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/0dd431c8/immich-telegram-upload/config"
 	"github.com/go-telegram/bot"
@@ -18,29 +16,26 @@ type UploadFunc func(asset io.Reader, filename string, author string) error
 type Manager struct {
 	telegramToken      string
 	adminUserID        int64
-	uploadsDisabled    *atomic.Bool
 	onlyFileAttachment bool
 	bot                *bot.Bot
 	ctx                context.Context
 	upload             UploadFunc
 	uploadEvents       chan uploadEvent
+	control            *uploadControl
 	logger             *slog.Logger
 
-	uploadControlMutex sync.Mutex
-	nextUploadID       atomic.Int64
-	disableTimer       *time.Timer
-	timerGeneration    uint64
+	nextUploadID atomic.Int64
 }
 
 func New(cfg config.Config, ctx context.Context, onUpload UploadFunc, logger *slog.Logger) *Manager {
 	manager := Manager{
 		telegramToken:      cfg.TelegramToken,
 		adminUserID:        cfg.TelegramAdminUserID,
-		uploadsDisabled:    &atomic.Bool{},
 		onlyFileAttachment: cfg.OnlyFileAttachment,
 		ctx:                ctx,
 		upload:             onUpload,
 		uploadEvents:       make(chan uploadEvent, 16),
+		control:            newUploadControl(logger),
 		logger:             logger,
 	}
 
@@ -79,39 +74,6 @@ func (manager *Manager) Run() {
 	manager.bot.Start(ctx)
 }
 
-func (manager *Manager) setUploadsEnabled(enabled bool, duration time.Duration) {
-	manager.uploadControlMutex.Lock()
-	defer manager.uploadControlMutex.Unlock()
-
-	manager.timerGeneration++
-
-	generation := manager.timerGeneration
-
-	if manager.disableTimer != nil {
-		manager.disableTimer.Stop()
-		manager.disableTimer = nil
-	}
-
-	manager.uploadsDisabled.Store(!enabled)
-
-	if !enabled || duration <= 0 {
-		return
-	}
-
-	manager.disableTimer = time.AfterFunc(duration, func() {
-		manager.uploadControlMutex.Lock()
-		defer manager.uploadControlMutex.Unlock()
-
-		if generation != manager.timerGeneration {
-			return
-		}
-
-		manager.disableTimer = nil
-		manager.uploadsDisabled.Store(true)
-		manager.logger.Info("Disabled on timer")
-	})
-}
-
 func (manager *Manager) sendMessage(chatId int64, text string) (*models.Message, error) {
 	message, err := manager.bot.SendMessage(manager.ctx, &bot.SendMessageParams{
 		ChatID: chatId,
@@ -131,7 +93,7 @@ func (manager *Manager) handleMessage(ctx context.Context, b *bot.Bot, update *m
 		return
 	}
 
-	if manager.uploadsDisabled.Load() {
+	if !manager.control.enabled() {
 		go func() {
 			_, err := manager.sendMessage(
 				update.Message.Chat.ID,

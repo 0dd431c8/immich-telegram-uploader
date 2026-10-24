@@ -21,7 +21,7 @@ func (manager *Manager) uploadsDisabledHandler(disabled bool) func(ctx context.C
 		manager.logger.Info("Set uploads disabled", "disabled", disabled)
 
 		if disabled {
-			manager.setUploadsEnabled(false, 0)
+			manager.control.setEnabled(false, 0)
 		}
 
 		if !disabled {
@@ -44,7 +44,7 @@ func (manager *Manager) uploadsDisabledHandler(disabled bool) func(ctx context.C
 				duration = time.Second * time.Duration(d)
 			}
 
-			manager.setUploadsEnabled(true, duration)
+			manager.control.setEnabled(true, duration)
 
 			manager.logger.Info("Enabled for duration", "duration", duration/time.Second)
 		}

@@ -51,7 +51,7 @@ func TestUploadsDisabledHandler(t *testing.T) {
 		{9876543210, false, true}, {1234567890, false, false},
 	} {
 		manager.uploadsDisabledHandler(tc.disable)(context.Background(), nil, &models.Update{Message: &models.Message{Chat: models.Chat{ID: tc.id}}})
-		if got := manager.uploadsDisabled.Load(); got != tc.want {
+		if got := !manager.control.enabled(); got != tc.want {
 			t.Errorf("user %d setting disabled=%v: got %v, want %v", tc.id, tc.disable, got, tc.want)
 		}
 	}
