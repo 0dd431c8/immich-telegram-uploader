@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"log/slog"
-	"sync/atomic"
 
 	"github.com/0dd431c8/immich-telegram-upload/config"
 	"github.com/go-telegram/bot"
@@ -23,8 +22,6 @@ type Manager struct {
 	control            *uploadControl
 	reporter           *uploadReporter
 	logger             *slog.Logger
-
-	nextUploadID atomic.Int64
 }
 
 func New(cfg config.Config, ctx context.Context, onUpload UploadFunc, logger *slog.Logger) *Manager {

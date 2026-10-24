@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-	"sync/atomic"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
@@ -63,26 +62,18 @@ func (manager *Manager) processDocument(ctx context.Context, b *bot.Bot, onUploa
 		return errors.New("unsupported filetype")
 	}
 
-	uploadID := manager.nextUploadID.Add(1)
-	sentBytes := &atomic.Int64{}
+	tracking, err := manager.reporter.begin(
+		ctx,
+		chatID,
+		author,
+		document.FileSize,
+	)
 
-	select {
-	case manager.reporter.events <- uploadStarted{
-		chatID:   chatID,
-		uploadID: uploadID,
-		username: author,
-		fileSize: document.FileSize,
-		sent:     sentBytes,
-	}:
-	case <-ctx.Done():
-		return ctx.Err()
+	if err != nil {
+		return err
 	}
 
-	onProgress := func(sent, total int64) {
-		sentBytes.Store(sent)
-	}
-
-	err := streamFileToUpload(
+	uploadErr := streamFileToUpload(
 		ctx,
 		b,
 		document.FileID,
@@ -90,18 +81,12 @@ func (manager *Manager) processDocument(ctx context.Context, b *bot.Bot, onUploa
 		document.FileSize,
 		author,
 		onUpload,
-		onProgress,
+		tracking.progress,
 	)
 
-	select {
-	case manager.reporter.events <- uploadFinished{
-		chatID:   chatID,
-		uploadID: uploadID,
-		err:      err,
-	}:
-	case <-ctx.Done():
-		return ctx.Err()
+	if err := tracking.finish(ctx, uploadErr); err != nil {
+		return err
 	}
 
-	return err
+	return uploadErr
 }

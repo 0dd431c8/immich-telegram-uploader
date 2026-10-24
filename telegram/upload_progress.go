@@ -16,6 +16,15 @@ type uploadReporter struct {
 	adminUserID int64
 	logger      *slog.Logger
 	events      chan uploadEvent
+
+	nextUploadID atomic.Int64
+}
+
+type uploadTracking struct {
+	reporter *uploadReporter
+	uploadID int64
+	chatID   int64
+	sent     atomic.Int64
 }
 
 func newUploadReporter(bot *bot.Bot, adminUserID int64, logger *slog.Logger) *uploadReporter {
@@ -54,6 +63,52 @@ type uploadFinished struct {
 func (uploadFinished) isUploadEvent() {}
 func (e uploadFinished) ChatID() int64 {
 	return e.chatID
+}
+
+func (reporter *uploadReporter) begin(
+	ctx context.Context,
+	chatID int64,
+	author string,
+	fileSize int64,
+) (*uploadTracking, error) {
+	tracking := &uploadTracking{
+		reporter: reporter,
+		uploadID: reporter.nextUploadID.Add(1),
+		chatID:   chatID,
+	}
+
+	select {
+	case reporter.events <- uploadStarted{
+		chatID:   chatID,
+		uploadID: tracking.uploadID,
+		username: author,
+		fileSize: fileSize,
+		sent:     &tracking.sent,
+	}:
+		return tracking, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (tracking *uploadTracking) progress(sent, total int64) {
+	tracking.sent.Store(sent)
+}
+
+func (tracking *uploadTracking) finish(
+	ctx context.Context,
+	uploadErr error,
+) error {
+	select {
+	case tracking.reporter.events <- uploadFinished{
+		chatID:   tracking.chatID,
+		uploadID: tracking.uploadID,
+		err:      uploadErr,
+	}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (reporter *uploadReporter) watchUploadState(ctx context.Context) {
