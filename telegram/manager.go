@@ -347,7 +347,16 @@ func (manager *Manager) sendMessage(chatId int64, text string) (*models.Message,
 	return message, err
 }
 
-func streamFileToUpload(ctx context.Context, b *bot.Bot, onUpload UploadFunc, fileId string, filename string, author string) error {
+func streamFileToUpload(
+	ctx context.Context,
+	b *bot.Bot,
+	fileId string,
+	filename string,
+	fileSize int64,
+	author string,
+	onUpload UploadFunc,
+	onProgress ProgressFunc,
+) error {
 	file, err := b.GetFile(ctx, &bot.GetFileParams{
 		FileID: fileId,
 	})
@@ -370,13 +379,19 @@ func streamFileToUpload(ctx context.Context, b *bot.Bot, onUpload UploadFunc, fi
 		return err
 	}
 
+	progressReader := &ProgressReader{
+		Reader:     resp.Body,
+		Total:      fileSize,
+		OnProgress: onProgress,
+	}
+
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return errors.New("failed to download file " + filename)
 	}
 
-	return onUpload(resp.Body, filename, author)
+	return onUpload(progressReader, filename, author)
 }
 
 func (manager *Manager) processDocument(ctx context.Context, b *bot.Bot, onUpload UploadFunc, author string, chatId int64, document *models.Document) error {
@@ -390,7 +405,7 @@ func (manager *Manager) processDocument(ctx context.Context, b *bot.Bot, onUploa
 		return ctx.Err()
 	}
 
-	err := streamFileToUpload(ctx, b, onUpload, document.FileID, document.FileName, author)
+	err := streamFileToUpload(ctx, b, document.FileID, document.FileName, document.FileSize, author, onUpload, nil)
 	select {
 	case manager.uploadEvents <- uploadFinished{chatId}:
 	case <-ctx.Done():

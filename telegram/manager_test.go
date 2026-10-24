@@ -48,7 +48,7 @@ func fileServer(w http.ResponseWriter, r *http.Request) {
 func TestStreamFileToUpload(t *testing.T) {
 	b := testBot(t, fileServer)
 	called := false
-	err := streamFileToUpload(context.Background(), b, func(data io.Reader, filename, author string) error {
+	err := streamFileToUpload(context.Background(), b, "file-1", "photo.jpg", 13, "alice", func(data io.Reader, filename, author string) error {
 		called = true
 		content, err := io.ReadAll(data)
 		if err != nil {
@@ -58,7 +58,7 @@ func TestStreamFileToUpload(t *testing.T) {
 			t.Errorf("upload = (%q, %q, %q)", content, filename, author)
 		}
 		return nil
-	}, "file-1", "photo.jpg", "alice")
+	}, nil)
 	if err != nil || !called {
 		t.Fatalf("upload called = %v, error = %v", called, err)
 	}
@@ -87,10 +87,10 @@ func TestStreamFileToUploadFailures(t *testing.T) {
 				http.Error(w, "download failed", tc.status)
 			})
 			called := false
-			err := streamFileToUpload(context.Background(), b, func(io.Reader, string, string) error {
+			err := streamFileToUpload(context.Background(), b, "file-1", "photo.jpg", 13, "alice", func(io.Reader, string, string) error {
 				called = true
 				return nil
-			}, "file-1", "photo.jpg", "alice")
+			}, nil)
 			if err == nil {
 				t.Error("expected error for failed Telegram request")
 			}
@@ -104,7 +104,7 @@ func TestStreamFileToUploadFailures(t *testing.T) {
 func TestStreamFileToUploadPropagatesUploadError(t *testing.T) {
 	b := testBot(t, fileServer)
 	want := errors.New("Immich unavailable")
-	err := streamFileToUpload(context.Background(), b, func(io.Reader, string, string) error { return want }, "file-1", "photo.jpg", "alice")
+	err := streamFileToUpload(context.Background(), b, "file-1", "photo.jpg", 13, "alice", func(io.Reader, string, string) error { return want }, nil)
 	if !errors.Is(err, want) {
 		t.Errorf("error = %v, want %v", err, want)
 	}
@@ -139,7 +139,7 @@ func TestStreamFileToUploadClosesDownload(t *testing.T) {
 				return &http.Response{StatusCode: tc.status, Status: fmt.Sprintf("%d %s", tc.status, http.StatusText(tc.status)), Body: body, Header: make(http.Header)}, nil
 			})}
 			t.Cleanup(func() { http.DefaultClient = original })
-			_ = streamFileToUpload(context.Background(), b, func(io.Reader, string, string) error { return tc.uploadErr }, "file-1", "photo.jpg", "alice")
+			_ = streamFileToUpload(context.Background(), b, "file-1", "photo.jpg", 13, "alice", func(io.Reader, string, string) error { return tc.uploadErr }, nil)
 			if !body.closed {
 				t.Error("download response body was not closed")
 			}
@@ -155,7 +155,7 @@ func TestStreamFileToUploadCancellation(t *testing.T) {
 		cancel()
 	})
 	called := false
-	err := streamFileToUpload(ctx, b, func(io.Reader, string, string) error { called = true; return nil }, "file-1", "photo.jpg", "alice")
+	err := streamFileToUpload(ctx, b, "file-1", "photo.jpg", 13, "alice", func(io.Reader, string, string) error { called = true; return nil }, nil)
 	if !errors.Is(err, context.Canceled) || called {
 		t.Errorf("upload called = %v, error = %v; want cancellation without upload", called, err)
 	}
