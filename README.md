@@ -1,4 +1,4 @@
-# Immich Telegram upload
+<h1><img src="assets/logo.png" alt="" width="56" height="56" align="absmiddle"> Immich Telegram upload</h1>
 
 A Telegram bot for Immich owners who want friends or family to send photos and videos without creating Immich accounts. Files go into your Immich library, either in one album or in separate albums named `@username uploads`.
 
