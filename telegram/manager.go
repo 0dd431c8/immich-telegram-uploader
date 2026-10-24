@@ -20,8 +20,8 @@ type Manager struct {
 	bot                *bot.Bot
 	ctx                context.Context
 	upload             UploadFunc
-	uploadEvents       chan uploadEvent
 	control            *uploadControl
+	reporter           *uploadReporter
 	logger             *slog.Logger
 
 	nextUploadID atomic.Int64
@@ -34,8 +34,8 @@ func New(cfg config.Config, ctx context.Context, onUpload UploadFunc, logger *sl
 		onlyFileAttachment: cfg.OnlyFileAttachment,
 		ctx:                ctx,
 		upload:             onUpload,
-		uploadEvents:       make(chan uploadEvent, 16),
 		control:            newUploadControl(logger),
+		reporter:           newUploadReporter(nil, cfg.TelegramAdminUserID, logger),
 		logger:             logger,
 	}
 
@@ -45,6 +45,8 @@ func New(cfg config.Config, ctx context.Context, onUpload UploadFunc, logger *sl
 func (manager *Manager) Run() {
 	ctx := manager.ctx
 	b, err := bot.New(manager.telegramToken)
+
+	manager.reporter.bot = b
 
 	if err != nil {
 		panic(err)
@@ -69,7 +71,7 @@ func (manager *Manager) Run() {
 	manager.bot.RegisterHandler(bot.HandlerTypeMessageText, "disable", bot.MatchTypeCommand, manager.uploadsDisabledHandler(true))
 	manager.bot.RegisterHandler(bot.HandlerTypeMessageText, "", bot.MatchTypeExact, manager.handleMessage)
 
-	go manager.watchUploadState(ctx)
+	go manager.reporter.watchUploadState(ctx)
 
 	manager.bot.Start(ctx)
 }

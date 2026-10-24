@@ -3,12 +3,29 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/go-telegram/bot"
 )
+
+type uploadReporter struct {
+	bot         *bot.Bot
+	adminUserID int64
+	logger      *slog.Logger
+	events      chan uploadEvent
+}
+
+func newUploadReporter(bot *bot.Bot, adminUserID int64, logger *slog.Logger) *uploadReporter {
+	return &uploadReporter{
+		bot:         bot,
+		adminUserID: adminUserID,
+		logger:      logger,
+		events:      make(chan uploadEvent, 16),
+	}
+}
 
 type uploadEvent interface {
 	isUploadEvent()
@@ -39,14 +56,14 @@ func (e uploadFinished) ChatID() int64 {
 	return e.chatID
 }
 
-func (manager *Manager) watchUploadState(ctx context.Context) {
+func (reporter *uploadReporter) watchUploadState(ctx context.Context) {
 	workers := make(map[int64]chan uploadEvent)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case msg := <-manager.uploadEvents:
+		case msg := <-reporter.events:
 			events, exists := workers[msg.ChatID()]
 
 			if !exists {
@@ -59,7 +76,7 @@ func (manager *Manager) watchUploadState(ctx context.Context) {
 				events = make(chan uploadEvent, 16)
 				workers[started.chatID] = events
 
-				go manager.watchChatUploads(ctx, started.chatID, started.username, events)
+				go reporter.watchChatUploads(ctx, started.chatID, started.username, events)
 			}
 
 			select {
@@ -71,7 +88,7 @@ func (manager *Manager) watchUploadState(ctx context.Context) {
 	}
 }
 
-func (manager *Manager) watchChatUploads(ctx context.Context, chatID int64, username string, events <-chan uploadEvent) {
+func (reporter *uploadReporter) watchChatUploads(ctx context.Context, chatID int64, username string, events <-chan uploadEvent) {
 	type upload struct {
 		total    int64
 		sent     *atomic.Int64
@@ -89,7 +106,7 @@ func (manager *Manager) watchChatUploads(ctx context.Context, chatID int64, user
 		perFileProgress: make(map[int64]upload),
 	}
 
-	logger := manager.logger.With("username", username)
+	logger := reporter.logger.With("username", username)
 
 	renderProgressBar := func() string {
 		size := 10
@@ -182,7 +199,7 @@ func (manager *Manager) watchChatUploads(ctx context.Context, chatID int64, user
 			}
 
 			if progress.messageID == 0 {
-				msg, err := manager.sendMessage(chatID, text)
+				msg, err := reporter.bot.SendMessage(ctx, &bot.SendMessageParams{ChatID: chatID, Text: text})
 
 				if err != nil {
 					logger.Error("Failed to send progress message", "error", err)
@@ -192,7 +209,7 @@ func (manager *Manager) watchChatUploads(ctx context.Context, chatID int64, user
 				progress.messageID = msg.ID
 				progress.lastText = text
 			} else if text != progress.lastText {
-				_, err := manager.bot.EditMessageText(ctx, &bot.EditMessageTextParams{
+				_, err := reporter.bot.EditMessageText(ctx, &bot.EditMessageTextParams{
 					ChatID:    chatID,
 					MessageID: int(progress.messageID),
 					Text:      text,
@@ -210,13 +227,16 @@ func (manager *Manager) watchChatUploads(ctx context.Context, chatID int64, user
 				continue
 			}
 
-			if chatID != manager.adminUserID {
-				_, err := manager.sendMessage(
-					manager.adminUserID,
-					fmt.Sprintf(
-						"Uploads from %s: %d succeeded, %d failed",
-						username, succeeded, failed,
-					),
+			if chatID != reporter.adminUserID {
+				_, err := reporter.bot.SendMessage(
+					ctx,
+					&bot.SendMessageParams{
+						ChatID: reporter.adminUserID,
+						Text: fmt.Sprintf(
+							"Uploads from %s: %d succeeded, %d failed",
+							username, succeeded, failed,
+						),
+					},
 				)
 
 				if err != nil {

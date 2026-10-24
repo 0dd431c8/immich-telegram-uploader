@@ -67,7 +67,7 @@ func (manager *Manager) processDocument(ctx context.Context, b *bot.Bot, onUploa
 	sentBytes := &atomic.Int64{}
 
 	select {
-	case manager.uploadEvents <- uploadStarted{
+	case manager.reporter.events <- uploadStarted{
 		chatID:   chatID,
 		uploadID: uploadID,
 		username: author,
@@ -94,7 +94,7 @@ func (manager *Manager) processDocument(ctx context.Context, b *bot.Bot, onUploa
 	)
 
 	select {
-	case manager.uploadEvents <- uploadFinished{
+	case manager.reporter.events <- uploadFinished{
 		chatID:   chatID,
 		uploadID: uploadID,
 		err:      err,

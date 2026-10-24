@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -19,9 +20,8 @@ type progressCall struct {
 func startProgressWatcher(t *testing.T, reject func(progressCall) bool) (chan uploadEvent, <-chan progressCall) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	manager := testManager(ctx)
 	calls := make(chan progressCall, 64)
-	manager.bot = testBot(t, func(w http.ResponseWriter, r *http.Request) {
+	b := testBot(t, func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseMultipartForm(1 << 20); err != nil {
 			t.Error(err)
 			return
@@ -39,11 +39,12 @@ func startProgressWatcher(t *testing.T, reject func(progressCall) bool) (chan up
 		}
 		calls <- call
 	})
+	reporter := newUploadReporter(b, 1234567890, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	events := make(chan uploadEvent, 16)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		manager.watchChatUploads(ctx, 42, "alice", events)
+		reporter.watchChatUploads(ctx, 42, "alice", events)
 	}()
 	t.Cleanup(func() {
 		cancel()

@@ -61,7 +61,7 @@ func readUploadEvents(t *testing.T, manager *Manager) (uploadStarted, uploadFini
 	t.Helper()
 	var started uploadStarted
 	select {
-	case event := <-manager.uploadEvents:
+	case event := <-manager.reporter.events:
 		var ok bool
 		started, ok = event.(uploadStarted)
 		if !ok || started.uploadID == 0 || started.sent == nil {
@@ -71,12 +71,12 @@ func readUploadEvents(t *testing.T, manager *Manager) (uploadStarted, uploadFini
 		t.Fatal("missing start event")
 	}
 	select {
-	case event := <-manager.uploadEvents:
+	case event := <-manager.reporter.events:
 		finished, ok := event.(uploadFinished)
 		if !ok || finished.uploadID != started.uploadID || finished.ChatID() != started.ChatID() {
 			t.Fatalf("finish event = %#v, start = %#v", event, started)
 		}
-		if len(manager.uploadEvents) != 0 {
+		if len(manager.reporter.events) != 0 {
 			t.Fatal("unexpected extra upload events")
 		}
 		return started, finished

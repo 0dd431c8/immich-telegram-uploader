@@ -157,8 +157,8 @@ func TestProcessDocumentFiltering(t *testing.T) {
 				if finished.err != nil {
 					t.Errorf("finish error = %v", finished.err)
 				}
-			} else if err == nil || called || len(manager.uploadEvents) != 0 {
-				t.Errorf("unsupported document: upload called = %v, error = %v, events = %d", called, err, len(manager.uploadEvents))
+			} else if err == nil || called || len(manager.reporter.events) != 0 {
+				t.Errorf("unsupported document: upload called = %v, error = %v, events = %d", called, err, len(manager.reporter.events))
 			}
 		})
 	}
@@ -184,8 +184,8 @@ func TestProcessDocumentFinishesAfterUploadFailure(t *testing.T) {
 func TestProcessDocumentCancellationWithFullEventQueue(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	manager := testManager(ctx)
-	for i := 0; i < cap(manager.uploadEvents); i++ {
-		manager.uploadEvents <- uploadStarted{}
+	for i := 0; i < cap(manager.reporter.events); i++ {
+		manager.reporter.events <- uploadStarted{}
 	}
 	cancel()
 	// A nil bot ensures cancellation returns before any Telegram request.
