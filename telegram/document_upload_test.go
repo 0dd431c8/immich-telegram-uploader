@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -139,40 +140,42 @@ func TestProcessDocumentFiltering(t *testing.T) {
 		{"text/plain", false}, {"image", false}, {"", false},
 	} {
 		t.Run(tc.mime, func(t *testing.T) {
-			manager := testManager(context.Background())
+			reporter := newUploadReporter(nil, 1234567890, slog.New(slog.NewTextHandler(io.Discard, nil)))
 			b := testBot(t, fileServer)
 			called := false
-			err := manager.processDocument(context.Background(), b, func(io.Reader, string, string) error {
+			uploader := newDocumentUploader(func(io.Reader, string, string) error {
 				called = true
 				return nil
-			}, "alice", 42, &models.Document{FileID: "file-1", FileName: "photo.jpg", FileSize: 13, MimeType: tc.mime})
+			}, reporter)
+			err := uploader.processDocument(context.Background(), b, "alice", 42, &models.Document{FileID: "file-1", FileName: "photo.jpg", FileSize: 13, MimeType: tc.mime})
 			if tc.want {
 				if err != nil || !called {
 					t.Fatalf("accepted document: upload called = %v, error = %v", called, err)
 				}
-				started, finished := readUploadEvents(t, manager)
+				started, finished := readUploadEvents(t, reporter)
 				if started.ChatID() != 42 || started.username != "alice" || started.fileSize != 13 || started.sent.Load() != 0 {
 					t.Errorf("start event = %+v, sent = %d", started, started.sent.Load())
 				}
 				if finished.err != nil {
 					t.Errorf("finish error = %v", finished.err)
 				}
-			} else if err == nil || called || len(manager.reporter.events) != 0 {
-				t.Errorf("unsupported document: upload called = %v, error = %v, events = %d", called, err, len(manager.reporter.events))
+			} else if err == nil || called || len(reporter.events) != 0 {
+				t.Errorf("unsupported document: upload called = %v, error = %v, events = %d", called, err, len(reporter.events))
 			}
 		})
 	}
 }
 
 func TestProcessDocumentFinishesAfterUploadFailure(t *testing.T) {
-	manager := testManager(context.Background())
+	reporter := newUploadReporter(nil, 1234567890, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	b := testBot(t, fileServer)
 	want := errors.New("upload failed")
-	err := manager.processDocument(context.Background(), b, func(io.Reader, string, string) error { return want }, "alice", 42, &models.Document{FileID: "file-1", MimeType: "image/jpeg"})
+	uploader := newDocumentUploader(func(io.Reader, string, string) error { return want }, reporter)
+	err := uploader.processDocument(context.Background(), b, "alice", 42, &models.Document{FileID: "file-1", MimeType: "image/jpeg"})
 	if !errors.Is(err, want) {
 		t.Errorf("error = %v, want %v", err, want)
 	}
-	started, finished := readUploadEvents(t, manager)
+	started, finished := readUploadEvents(t, reporter)
 	if started.ChatID() != 42 || started.username != "alice" || started.sent.Load() != 0 {
 		t.Errorf("start event = %+v", started)
 	}
@@ -183,14 +186,68 @@ func TestProcessDocumentFinishesAfterUploadFailure(t *testing.T) {
 
 func TestProcessDocumentCancellationWithFullEventQueue(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	manager := testManager(ctx)
-	for i := 0; i < cap(manager.reporter.events); i++ {
-		manager.reporter.events <- uploadStarted{}
+	reporter := newUploadReporter(nil, 1234567890, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	uploader := newDocumentUploader(nil, reporter)
+	for i := 0; i < cap(reporter.events); i++ {
+		reporter.events <- uploadStarted{}
 	}
 	cancel()
 	// A nil bot ensures cancellation returns before any Telegram request.
-	err := manager.processDocument(ctx, nil, nil, "alice", 42, &models.Document{MimeType: "image/jpeg"})
+	err := uploader.processDocument(ctx, nil, "alice", 42, &models.Document{MimeType: "image/jpeg"})
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("error = %v, want context.Canceled", err)
+	}
+}
+
+func readUploadEvents(t *testing.T, reporter *uploadReporter) (uploadStarted, uploadFinished) {
+	t.Helper()
+	var started uploadStarted
+	select {
+	case event := <-reporter.events:
+		var ok bool
+		started, ok = event.(uploadStarted)
+		if !ok || started.uploadID == 0 || started.sent == nil {
+			t.Fatalf("invalid start event: %#v", event)
+		}
+	default:
+		t.Fatal("missing start event")
+	}
+	select {
+	case event := <-reporter.events:
+		finished, ok := event.(uploadFinished)
+		if !ok || finished.uploadID != started.uploadID || finished.ChatID() != started.ChatID() {
+			t.Fatalf("finish event = %#v, start = %#v", event, started)
+		}
+		if len(reporter.events) != 0 {
+			t.Fatal("unexpected extra upload events")
+		}
+		return started, finished
+	default:
+		t.Fatal("missing finish event")
+		return started, uploadFinished{}
+	}
+}
+
+func TestProcessDocumentTracksBytesWithoutProgressEvents(t *testing.T) {
+	reporter := newUploadReporter(nil, 1234567890, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	b := testBot(t, fileServer)
+	uploader := newDocumentUploader(func(data io.Reader, _, _ string) error {
+		_, err := io.Copy(io.Discard, data)
+		return err
+	}, reporter)
+	var previousID int64
+	for i := 0; i < 2; i++ {
+		err := uploader.processDocument(context.Background(), b, "alice", 42, &models.Document{FileID: "file-1", FileSize: 13, MimeType: "image/jpeg"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		started, finished := readUploadEvents(t, reporter)
+		if started.sent.Load() != 13 || started.fileSize != 13 || finished.err != nil {
+			t.Errorf("start = %+v, bytes = %d, finish = %+v", started, started.sent.Load(), finished)
+		}
+		if started.uploadID <= previousID {
+			t.Fatalf("upload ID %d did not increase from %d", started.uploadID, previousID)
+		}
+		previousID = started.uploadID
 	}
 }

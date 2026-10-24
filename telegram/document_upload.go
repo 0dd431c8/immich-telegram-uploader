@@ -10,6 +10,15 @@ import (
 	"github.com/go-telegram/bot/models"
 )
 
+type documentUploader struct {
+	upload   UploadFunc
+	reporter *uploadReporter
+}
+
+func newDocumentUploader(upload UploadFunc, reporter *uploadReporter) *documentUploader {
+	return &documentUploader{upload, reporter}
+}
+
 func streamFileToUpload(
 	ctx context.Context,
 	b *bot.Bot,
@@ -57,12 +66,18 @@ func streamFileToUpload(
 	return onUpload(progressReader, filename, author)
 }
 
-func (manager *Manager) processDocument(ctx context.Context, b *bot.Bot, onUpload UploadFunc, author string, chatID int64, document *models.Document) error {
+func (uploader *documentUploader) processDocument(
+	ctx context.Context,
+	b *bot.Bot,
+	author string,
+	chatID int64,
+	document *models.Document,
+) error {
 	if mime := document.MimeType; !strings.HasPrefix(mime, "image/") && !strings.HasPrefix(mime, "video/") {
 		return errors.New("unsupported filetype")
 	}
 
-	tracking, err := manager.reporter.begin(
+	tracking, err := uploader.reporter.begin(
 		ctx,
 		chatID,
 		author,
@@ -80,7 +95,7 @@ func (manager *Manager) processDocument(ctx context.Context, b *bot.Bot, onUploa
 		document.FileName,
 		document.FileSize,
 		author,
-		onUpload,
+		uploader.upload,
 		tracking.progress,
 	)
 

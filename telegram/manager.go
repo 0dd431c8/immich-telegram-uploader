@@ -18,21 +18,23 @@ type Manager struct {
 	onlyFileAttachment bool
 	bot                *bot.Bot
 	ctx                context.Context
-	upload             UploadFunc
+	uploader           *documentUploader
 	control            *uploadControl
 	reporter           *uploadReporter
 	logger             *slog.Logger
 }
 
 func New(cfg config.Config, ctx context.Context, onUpload UploadFunc, logger *slog.Logger) *Manager {
+	reporter := newUploadReporter(nil, cfg.TelegramAdminUserID, logger)
+
 	manager := Manager{
 		telegramToken:      cfg.TelegramToken,
 		adminUserID:        cfg.TelegramAdminUserID,
 		onlyFileAttachment: cfg.OnlyFileAttachment,
 		ctx:                ctx,
-		upload:             onUpload,
+		uploader:           newDocumentUploader(onUpload, reporter),
 		control:            newUploadControl(logger),
-		reporter:           newUploadReporter(nil, cfg.TelegramAdminUserID, logger),
+		reporter:           reporter,
 		logger:             logger,
 	}
 
@@ -113,7 +115,13 @@ func (manager *Manager) handleMessage(ctx context.Context, b *bot.Bot, update *m
 
 			logger.Info("Processing document", "filename", update.Message.Document.FileName, "size", update.Message.Document.FileSize)
 
-			err := manager.processDocument(ctx, b, manager.upload, update.Message.Chat.Username, update.Message.Chat.ID, update.Message.Document)
+			err := manager.uploader.processDocument(
+				ctx,
+				b,
+				update.Message.Chat.Username,
+				update.Message.Chat.ID,
+				update.Message.Document,
+			)
 
 			if err != nil {
 				logger.Error("Failed to process document", "error", err)
