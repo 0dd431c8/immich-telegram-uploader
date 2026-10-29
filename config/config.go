@@ -14,7 +14,6 @@ type Config struct {
 	ImmichToken          string `env:"IMMICH_TOKEN,required"`
 	ImmichPerClientAlbum bool   `env:"IMMICH_PER_CLIENT_ALBUM" envDefault:"false"`
 	ImmichAlbumId        string `env:"IMMICH_ALBUM_ID"`
-	OnlyFileAttachment   bool   `env:"ONLY_FILE_ATTACHMENT" envDefault:"true"`
 }
 
 func (c *Config) Validate() error {

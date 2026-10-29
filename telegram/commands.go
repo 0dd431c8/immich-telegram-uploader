@@ -52,17 +52,7 @@ func (manager *Manager) uploadsDisabledHandler(disabled bool) func(ctx context.C
 }
 
 func (manager *Manager) handleStart(ctx context.Context, b *bot.Bot, update *models.Update) {
-	attachmentModeText := ""
-
-	if manager.onlyFileAttachment {
-		attachmentModeText = "as a file attachment"
-	}
-
-	text := strings.Join([]string{
-		"Send photos and videos",
-		attachmentModeText,
-		"to upload",
-	}, " ")
+	text := "Send photos and videos as a file attachment to upload"
 
 	manager.logger.Info("New user", "telegram_handle", update.Message.Chat.Username)
 

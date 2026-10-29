@@ -15,31 +15,29 @@ import (
 type UploadFunc func(asset io.Reader, filename string, author string) error
 
 type Manager struct {
-	telegramToken      string
-	telegramBotAPIURL  string
-	adminUserID        int64
-	onlyFileAttachment bool
-	bot                *bot.Bot
-	ctx                context.Context
-	uploader           *documentUploader
-	control            *uploadControl
-	reporter           *uploadReporter
-	logger             *slog.Logger
+	telegramToken     string
+	telegramBotAPIURL string
+	adminUserID       int64
+	bot               *bot.Bot
+	ctx               context.Context
+	uploader          *documentUploader
+	control           *uploadControl
+	reporter          *uploadReporter
+	logger            *slog.Logger
 }
 
 func New(cfg config.Config, ctx context.Context, onUpload UploadFunc, logger *slog.Logger) *Manager {
 	reporter := newUploadReporter(nil, cfg.TelegramAdminUserID, logger)
 
 	manager := Manager{
-		telegramToken:      cfg.TelegramToken,
-		telegramBotAPIURL:  cfg.TelegramBotAPIURL,
-		adminUserID:        cfg.TelegramAdminUserID,
-		onlyFileAttachment: cfg.OnlyFileAttachment,
-		ctx:                ctx,
-		uploader:           newDocumentUploader(onUpload, reporter, cfg.TelegramLocalMode),
-		control:            newUploadControl(logger),
-		reporter:           reporter,
-		logger:             logger,
+		telegramToken:     cfg.TelegramToken,
+		telegramBotAPIURL: cfg.TelegramBotAPIURL,
+		adminUserID:       cfg.TelegramAdminUserID,
+		ctx:               ctx,
+		uploader:          newDocumentUploader(onUpload, reporter, cfg.TelegramLocalMode),
+		control:           newUploadControl(logger),
+		reporter:          reporter,
+		logger:            logger,
 	}
 
 	return &manager
@@ -154,16 +152,14 @@ func (manager *Manager) handleMessage(ctx context.Context, b *bot.Bot, update *m
 		return
 	}
 
-	if manager.onlyFileAttachment {
-		go func() {
-			_, err := manager.sendMessage(
-				update.Message.Chat.ID,
-				"⚠️ Please, send attachment as a file ⚠️",
-			)
+	go func() {
+		_, err := manager.sendMessage(
+			update.Message.Chat.ID,
+			"⚠️ Please, send attachment as a file ⚠️",
+		)
 
-			if err != nil {
-				manager.logger.Error("Failed to send message", "error", err)
-			}
-		}()
-	}
+		if err != nil {
+			manager.logger.Error("Failed to send message", "error", err)
+		}
+	}()
 }
