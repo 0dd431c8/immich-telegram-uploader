@@ -43,7 +43,7 @@ History uses short descriptions with mixed capitalization, such as `add docker` 
 
 ## Security & Configuration Tips
 
-Copy `.env.example` to ignored `.env`; never commit credentials. Required: `TELEGRAM_BOT_TOKEN`, numeric `TELEGRAM_BOT_ADMIN_ID`, `IMMICH_API_URL`, and `IMMICH_TOKEN`. Set `IMMICH_ALBUM_ID` or `IMMICH_PER_CLIENT_ALBUM=true`. Admin identity controls upload toggles, not uploader authorization. Regular photo/video messages are unimplemented. `ONLY_FILE_ATTACHMENT` and its configuration field have been removed; non-document messages reaching the enabled upload handler always receive the attachment reminder. Keep command handlers and username checks ahead of that fallback.
+Copy `.env.example` to ignored `.env`; never commit credentials. Required: `TELEGRAM_BOT_TOKEN`, numeric `TELEGRAM_BOT_ADMIN_ID`, `IMMICH_API_URL`, and `IMMICH_TOKEN`. Set `IMMICH_ALBUM_ID` or `IMMICH_PER_CLIENT_ALBUM=true`. Admin identity controls upload toggles, not uploader authorization. Regular photo/video messages are unimplemented. Non-document messages reaching the enabled upload handler always receive the attachment reminder. Keep command handlers and username checks ahead of that fallback.
 
 Compose additionally requires `TELEGRAM_API_ID` and `TELEGRAM_API_HASH` for the API server. `.env.example` includes placeholders for those credentials and selects the included deployment with `TELEGRAM_BOT_API_URL=http://telegram-bot-api:8081` and `TELEGRAM_LOCAL_MODE=true`. The URL is a base address without `/bot` or the token. An empty URL uses the hosted API; local mode defaults to `false` when omitted and requires a custom URL when enabled. Keep the example configuration and README.md aligned with changes to `config.Config` and Compose.
 

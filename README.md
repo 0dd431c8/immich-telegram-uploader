@@ -85,8 +85,6 @@ If startup reports a `getMe` timeout, check `docker compose logs telegram-bot-ap
 
 Open a private chat with your bot, send `/start`, then send photos or videos **as files/documents**. Senders need a Telegram username. Regular photo/video messages are not supported. While uploads are enabled, other messages handled by the upload handler receive a reminder to send attachments as files.
 
-`ONLY_FILE_ATTACHMENT` has been removed. Existing values in `.env` have no effect; the attachment reminder is always enabled.
-
 Uploads are enabled at startup. In your private chat, the configured admin can send `/disable`, `/enable`, or `/enable 60` to accept uploads for 60 seconds. Timed durations support 1 to 4,294,967,295 seconds; `/enable` or `/enable 0` enables uploads indefinitely. Restarting the bot enables uploads again.
 
 Anyone with a Telegram username who can message the bot can upload while uploads are enabled. The admin ID only controls these commands; it is not an uploader allowlist.
