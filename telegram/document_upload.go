@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/go-telegram/bot"
@@ -11,12 +12,17 @@ import (
 )
 
 type documentUploader struct {
-	upload   UploadFunc
-	reporter *uploadReporter
+	upload    UploadFunc
+	reporter  *uploadReporter
+	localMode bool
 }
 
-func newDocumentUploader(upload UploadFunc, reporter *uploadReporter) *documentUploader {
-	return &documentUploader{upload, reporter}
+func newDocumentUploader(upload UploadFunc, reporter *uploadReporter, localMode bool) *documentUploader {
+	return &documentUploader{
+		upload,
+		reporter,
+		localMode,
+	}
 }
 
 func streamFileToUpload(
@@ -26,6 +32,7 @@ func streamFileToUpload(
 	filename string,
 	fileSize int64,
 	author string,
+	localMode bool,
 	onUpload UploadFunc,
 	onProgress ProgressFunc,
 ) error {
@@ -35,6 +42,28 @@ func streamFileToUpload(
 
 	if err != nil {
 		return err
+	}
+
+	if localMode {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		localFile, err := os.Open(file.FilePath)
+
+		if err != nil {
+			return err
+		}
+
+		defer func() { _ = localFile.Close() }()
+
+		progressReader := &ProgressReader{
+			Reader:     localFile,
+			Total:      fileSize,
+			OnProgress: onProgress,
+		}
+
+		return onUpload(progressReader, filename, author)
 	}
 
 	downloadUrl := b.FileDownloadLink(file)
@@ -95,6 +124,7 @@ func (uploader *documentUploader) processDocument(
 		document.FileName,
 		document.FileSize,
 		author,
+		uploader.localMode,
 		uploader.upload,
 		tracking.progress,
 	)

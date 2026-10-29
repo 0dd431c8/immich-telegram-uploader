@@ -7,6 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -16,7 +18,7 @@ import (
 func TestStreamFileToUpload(t *testing.T) {
 	b := testBot(t, fileServer)
 	called := false
-	err := streamFileToUpload(context.Background(), b, "file-1", "photo.jpg", 13, "alice", func(data io.Reader, filename, author string) error {
+	err := streamFileToUpload(context.Background(), b, "file-1", "photo.jpg", 13, "alice", false, func(data io.Reader, filename, author string) error {
 		called = true
 		content, err := io.ReadAll(data)
 		if err != nil {
@@ -55,7 +57,7 @@ func TestStreamFileToUploadFailures(t *testing.T) {
 				http.Error(w, "download failed", tc.status)
 			})
 			called := false
-			err := streamFileToUpload(context.Background(), b, "file-1", "photo.jpg", 13, "alice", func(io.Reader, string, string) error {
+			err := streamFileToUpload(context.Background(), b, "file-1", "photo.jpg", 13, "alice", false, func(io.Reader, string, string) error {
 				called = true
 				return nil
 			}, nil)
@@ -72,9 +74,73 @@ func TestStreamFileToUploadFailures(t *testing.T) {
 func TestStreamFileToUploadPropagatesUploadError(t *testing.T) {
 	b := testBot(t, fileServer)
 	want := errors.New("Immich unavailable")
-	err := streamFileToUpload(context.Background(), b, "file-1", "photo.jpg", 13, "alice", func(io.Reader, string, string) error { return want }, nil)
+	err := streamFileToUpload(context.Background(), b, "file-1", "photo.jpg", 13, "alice", false, func(io.Reader, string, string) error { return want }, nil)
 	if !errors.Is(err, want) {
 		t.Errorf("error = %v, want %v", err, want)
+	}
+}
+
+func TestStreamLocalFileToUpload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "photo.jpg")
+	if err := os.WriteFile(path, []byte("media content"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	uploadErr := errors.New("Immich unavailable")
+	for _, tc := range []struct {
+		name       string
+		path       string
+		getFileErr bool
+		uploadErr  error
+		cancel     bool
+	}{
+		{name: "success", path: path},
+		{name: "getFile rejected", getFileErr: true},
+		{name: "file missing", path: filepath.Join(t.TempDir(), "missing.jpg")},
+		{name: "upload failed", path: path, uploadErr: uploadErr},
+		{name: "canceled", path: path, cancel: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			b := testBot(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/bottest-token/getFile" {
+					t.Errorf("unexpected HTTP download: %s", r.URL.Path)
+					http.NotFound(w, r)
+					return
+				}
+				if tc.getFileErr {
+					_, _ = io.WriteString(w, `{"ok":false,"error_code":400,"description":"file unavailable"}`)
+					return
+				}
+				_, _ = fmt.Fprintf(w, `{"ok":true,"result":{"file_id":"file-1","file_path":%q}}`, tc.path)
+				if tc.cancel {
+					cancel()
+				}
+			})
+			called := false
+			err := streamFileToUpload(ctx, b, "file-1", "photo.jpg", 13, "alice", true, func(data io.Reader, filename, author string) error {
+				called = true
+				content, err := io.ReadAll(data)
+				if err != nil {
+					return err
+				}
+				if string(content) != "media content" || filename != "photo.jpg" || author != "alice" {
+					t.Errorf("upload = (%q, %q, %q)", content, filename, author)
+				}
+				return tc.uploadErr
+			}, nil)
+			wantCall := !tc.getFileErr && !tc.cancel && tc.path == path
+			wantError := !wantCall || tc.uploadErr != nil
+			if called != wantCall || (err != nil) != wantError {
+				t.Fatalf("upload called = %v, error = %v; want called = %v, error = %v", called, err, wantCall, wantError)
+			}
+			if tc.uploadErr != nil && !errors.Is(err, tc.uploadErr) {
+				t.Errorf("error = %v, want %v", err, tc.uploadErr)
+			}
+			if tc.cancel && !errors.Is(err, context.Canceled) {
+				t.Errorf("error = %v, want cancellation", err)
+			}
+		})
 	}
 }
 
@@ -107,7 +173,7 @@ func TestStreamFileToUploadClosesDownload(t *testing.T) {
 				return &http.Response{StatusCode: tc.status, Status: fmt.Sprintf("%d %s", tc.status, http.StatusText(tc.status)), Body: body, Header: make(http.Header)}, nil
 			})}
 			t.Cleanup(func() { http.DefaultClient = original })
-			_ = streamFileToUpload(context.Background(), b, "file-1", "photo.jpg", 13, "alice", func(io.Reader, string, string) error { return tc.uploadErr }, nil)
+			_ = streamFileToUpload(context.Background(), b, "file-1", "photo.jpg", 13, "alice", false, func(io.Reader, string, string) error { return tc.uploadErr }, nil)
 			if !body.closed {
 				t.Error("download response body was not closed")
 			}
@@ -123,7 +189,7 @@ func TestStreamFileToUploadCancellation(t *testing.T) {
 		cancel()
 	})
 	called := false
-	err := streamFileToUpload(ctx, b, "file-1", "photo.jpg", 13, "alice", func(io.Reader, string, string) error { called = true; return nil }, nil)
+	err := streamFileToUpload(ctx, b, "file-1", "photo.jpg", 13, "alice", false, func(io.Reader, string, string) error { called = true; return nil }, nil)
 	if !errors.Is(err, context.Canceled) || called {
 		t.Errorf("upload called = %v, error = %v; want cancellation without upload", called, err)
 	}
@@ -146,7 +212,7 @@ func TestProcessDocumentFiltering(t *testing.T) {
 			uploader := newDocumentUploader(func(io.Reader, string, string) error {
 				called = true
 				return nil
-			}, reporter)
+			}, reporter, false)
 			err := uploader.processDocument(context.Background(), b, "alice", 42, &models.Document{FileID: "file-1", FileName: "photo.jpg", FileSize: 13, MimeType: tc.mime})
 			if tc.want {
 				if err != nil || !called {
@@ -170,7 +236,7 @@ func TestProcessDocumentFinishesAfterUploadFailure(t *testing.T) {
 	reporter := newUploadReporter(nil, 1234567890, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	b := testBot(t, fileServer)
 	want := errors.New("upload failed")
-	uploader := newDocumentUploader(func(io.Reader, string, string) error { return want }, reporter)
+	uploader := newDocumentUploader(func(io.Reader, string, string) error { return want }, reporter, false)
 	err := uploader.processDocument(context.Background(), b, "alice", 42, &models.Document{FileID: "file-1", MimeType: "image/jpeg"})
 	if !errors.Is(err, want) {
 		t.Errorf("error = %v, want %v", err, want)
@@ -187,7 +253,7 @@ func TestProcessDocumentFinishesAfterUploadFailure(t *testing.T) {
 func TestProcessDocumentCancellationWithFullEventQueue(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	reporter := newUploadReporter(nil, 1234567890, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	uploader := newDocumentUploader(nil, reporter)
+	uploader := newDocumentUploader(nil, reporter, false)
 	for i := 0; i < cap(reporter.events); i++ {
 		reporter.events <- uploadStarted{}
 	}
@@ -234,7 +300,7 @@ func TestProcessDocumentTracksBytesWithoutProgressEvents(t *testing.T) {
 	uploader := newDocumentUploader(func(data io.Reader, _, _ string) error {
 		_, err := io.Copy(io.Discard, data)
 		return err
-	}, reporter)
+	}, reporter, false)
 	var previousID int64
 	for i := 0; i < 2; i++ {
 		err := uploader.processDocument(context.Background(), b, "alice", 42, &models.Document{FileID: "file-1", FileSize: 13, MimeType: "image/jpeg"})

@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"net/http"
+	"time"
 
 	"github.com/0dd431c8/immich-telegram-upload/config"
 	"github.com/go-telegram/bot"
@@ -14,6 +16,7 @@ type UploadFunc func(asset io.Reader, filename string, author string) error
 
 type Manager struct {
 	telegramToken      string
+	telegramBotAPIURL  string
 	adminUserID        int64
 	onlyFileAttachment bool
 	bot                *bot.Bot
@@ -29,10 +32,11 @@ func New(cfg config.Config, ctx context.Context, onUpload UploadFunc, logger *sl
 
 	manager := Manager{
 		telegramToken:      cfg.TelegramToken,
+		telegramBotAPIURL:  cfg.TelegramBotAPIURL,
 		adminUserID:        cfg.TelegramAdminUserID,
 		onlyFileAttachment: cfg.OnlyFileAttachment,
 		ctx:                ctx,
-		uploader:           newDocumentUploader(onUpload, reporter),
+		uploader:           newDocumentUploader(onUpload, reporter, cfg.TelegramLocalMode),
 		control:            newUploadControl(logger),
 		reporter:           reporter,
 		logger:             logger,
@@ -43,7 +47,23 @@ func New(cfg config.Config, ctx context.Context, onUpload UploadFunc, logger *sl
 
 func (manager *Manager) Run() {
 	ctx := manager.ctx
-	b, err := bot.New(manager.telegramToken)
+
+	var options []bot.Option
+
+	if manager.telegramBotAPIURL != "" {
+		options = append(
+			options,
+			bot.WithServerURL(manager.telegramBotAPIURL),
+			// The local API may need time to establish its Telegram session.
+			bot.WithCheckInitTimeout(time.Minute),
+			bot.WithHTTPClient(time.Minute, &http.Client{Timeout: 30 * time.Minute}),
+		)
+	}
+
+	b, err := bot.New(
+		manager.telegramToken,
+		options...,
+	)
 
 	manager.reporter.bot = b
 
