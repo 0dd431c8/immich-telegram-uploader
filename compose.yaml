@@ -8,7 +8,7 @@ services:
       TELEGRAM_LOCAL: "1"
     volumes:
       - telegram-bot-api-data:/var/lib/telegram-bot-api
-  immich-telegram-upload:
+  immich-telegram-uploader:
     build: .
     env_file: .env
     restart: unless-stopped

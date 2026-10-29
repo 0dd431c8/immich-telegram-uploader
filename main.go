@@ -6,8 +6,8 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/0dd431c8/immich-telegram-upload/app"
-	"github.com/0dd431c8/immich-telegram-upload/config"
+	"github.com/0dd431c8/immich-telegram-uploader/app"
+	"github.com/0dd431c8/immich-telegram-uploader/config"
 	"github.com/caarlos0/env/v11"
 	"github.com/joho/godotenv"
 )

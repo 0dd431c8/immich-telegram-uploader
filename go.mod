@@ -1,4 +1,4 @@
-module github.com/0dd431c8/immich-telegram-upload
+module github.com/0dd431c8/immich-telegram-uploader
 
 go 1.27.2
 

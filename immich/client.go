@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/0dd431c8/immich-telegram-upload/config"
+	"github.com/0dd431c8/immich-telegram-uploader/config"
 )
 
 const uploadsAlbumNameFormat = "@%s uploads"

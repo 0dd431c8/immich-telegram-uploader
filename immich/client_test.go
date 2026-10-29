@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/0dd431c8/immich-telegram-upload/config"
+	"github.com/0dd431c8/immich-telegram-uploader/config"
 )
 
 func testClient(ctx context.Context, apiURL, album string) Client {

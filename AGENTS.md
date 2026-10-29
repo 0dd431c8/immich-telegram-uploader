@@ -25,7 +25,7 @@ Use Go 1.27.2, as declared in `go.mod`.
 - `gofmt -w main.go app/*.go config/*.go telegram/*.go immich/*.go`: format sources.
 - `go mod tidy`: reconcile dependency changes.
 - `docker compose config --quiet`: validate deployment configuration; requires `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`, and an `.env` file for the bot service.
-- `docker compose up -d --build`: build and deploy; `docker compose logs -f immich-telegram-upload` shows logs.
+- `docker compose up -d --build`: build and deploy; `docker compose logs -f immich-telegram-uploader` shows logs.
 
 ## Coding Style & Naming Conventions
 

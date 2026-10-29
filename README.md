@@ -1,4 +1,4 @@
-<h1><img src="assets/logo.png" alt="" width="56" height="56" align="absmiddle"> Immich Telegram upload</h1>
+<h1><img src="assets/logo.png" alt="" width="56" height="56" align="absmiddle"> Immich Telegram Uploader</h1>
 
 A Telegram bot for Immich owners who want friends or family to send photos and videos without creating Immich accounts. Files go into your Immich library, either in one album or in separate albums named `@username uploads`.
 
@@ -19,8 +19,8 @@ Requires Docker with the Compose plugin and disk space for downloaded media. Com
 2. Clone this repository and copy the example configuration:
 
    ```sh
-   git clone https://github.com/0dd431c8/immich-telegram-upload.git
-   cd immich-telegram-upload
+   git clone https://github.com/0dd431c8/immich-telegram-uploader.git
+   cd immich-telegram-uploader
    cp .env.example .env
    ```
 
@@ -45,7 +45,7 @@ Requires Docker with the Compose plugin and disk space for downloaded media. Com
    ```sh
    docker compose config --quiet
    docker compose up -d --build
-   docker compose logs -f telegram-bot-api immich-telegram-upload
+   docker compose logs -f telegram-bot-api immich-telegram-uploader
    ```
 
 ## Switch from the hosted Bot API
@@ -53,7 +53,7 @@ Requires Docker with the Compose plugin and disk space for downloaded media. Com
 Stop any running instance of this bot that connects to `api.telegram.org`. For an existing Compose deployment:
 
 ```sh
-docker compose stop immich-telegram-upload
+docker compose stop immich-telegram-uploader
 ```
 
 Call Telegram's hosted [`logOut` method](https://core.telegram.org/bots/api#logout) once before connecting locally. In a shell where `TELEGRAM_BOT_TOKEN` is exported with your bot's token:
@@ -98,3 +98,7 @@ Install Go 1.27.2, configure `.env`, and run `go run .`.
 For Telegram's hosted API, leave `TELEGRAM_BOT_API_URL` empty and set `TELEGRAM_LOCAL_MODE=false`. Media streams over HTTP without a local media file, but Telegram limits [file downloads to 20 MB](https://core.telegram.org/bots/faq#how-do-i-download-files). The API ID and hash are not needed for this mode.
 
 For a separately hosted local API server, set `TELEGRAM_BOT_API_URL` to its reachable address and enable `TELEGRAM_LOCAL_MODE`. The Go process must have read access to the same absolute paths that the API server returns. The Compose hostname `telegram-bot-api` is only available inside its Docker network.
+
+## License
+
+[MIT](LICENSE)

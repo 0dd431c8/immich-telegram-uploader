@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/0dd431c8/immich-telegram-upload/config"
+	"github.com/0dd431c8/immich-telegram-uploader/config"
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
 )

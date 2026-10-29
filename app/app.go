@@ -4,9 +4,9 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/0dd431c8/immich-telegram-upload/config"
-	"github.com/0dd431c8/immich-telegram-upload/immich"
-	"github.com/0dd431c8/immich-telegram-upload/telegram"
+	"github.com/0dd431c8/immich-telegram-uploader/config"
+	"github.com/0dd431c8/immich-telegram-uploader/immich"
+	"github.com/0dd431c8/immich-telegram-uploader/telegram"
 )
 
 type App struct {
